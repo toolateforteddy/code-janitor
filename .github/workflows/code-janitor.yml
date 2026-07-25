@@ -93,7 +93,7 @@ jobs:
         if: steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch'
         uses: actions/checkout@v4
         with:
-          repository: '${{ github.repository }}'
+          repository: 'toolateforteddy/code-janitor'
           path: '.central-janitor'
 
       - name: Setup Node.js
