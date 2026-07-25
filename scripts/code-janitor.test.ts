@@ -54,14 +54,14 @@ describe('code-janitor engine test suite', () => {
             assert.equal(result, ' -- "src"');
         });
 
-        it('formats single exclude path correctly', () => {
-            const result = buildPathSpecArgs('.', 'vendor/**');
-            assert.equal(result, ' ":(exclude)vendor/**"');
+        it('formats workflow exclude path correctly', () => {
+            const result = buildPathSpecArgs('.', '.github/workflows/**');
+            assert.equal(result, ' ":(exclude).github/workflows/**"');
         });
 
         it('formats multiple comma-separated exclude paths correctly', () => {
-            const result = buildPathSpecArgs('.', 'vendor/**, dist/**, generated/**');
-            assert.equal(result, ' ":(exclude)vendor/**" ":(exclude)dist/**" ":(exclude)generated/**"');
+            const result = buildPathSpecArgs('.', '.github/workflows/**, vendor/**, dist/**, generated/**');
+            assert.equal(result, ' ":(exclude).github/workflows/**" ":(exclude)vendor/**" ":(exclude)dist/**" ":(exclude)generated/**"');
         });
 
         it('combines target path and exclude paths with extra whitespace trimmed', () => {

@@ -21,7 +21,7 @@ const testTimeoutMinutes = parseInt(process.env.TEST_TIMEOUT || '5', 10);
 const testTimeoutMs = (isNaN(testTimeoutMinutes) || testTimeoutMinutes <= 0 ? 5 : testTimeoutMinutes) * 60 * 1000;
 const lintCmd = process.env.LINT_CMD || '';
 const targetPath = process.env.TARGET_PATH || '.';
-const excludePathsStr = process.env.EXCLUDE_PATHS || '';
+const excludePathsStr = process.env.EXCLUDE_PATHS || '.github/workflows/**, vendor/**, generated/**, dist/**';
 const enableTestGen = process.env.ENABLE_TEST_GEN === 'true';
 const maxPRs = parseInt(process.env.MAX_PRS || '3', 10);
 const maxLineDiff = parseInt(process.env.MAX_LINE_DIFF || '100', 10);

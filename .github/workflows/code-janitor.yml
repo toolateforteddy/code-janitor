@@ -37,7 +37,7 @@ on:
         description: 'Comma-separated glob patterns to ignore'
         type: string
         required: false
-        default: 'vendor/**, generated/**, dist/**'
+        default: '.github/workflows/**, vendor/**, generated/**, dist/**'
       enable_test_generation:
         description: 'Whether to write unit tests for uncovered code'
         type: boolean

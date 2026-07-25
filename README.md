@@ -54,7 +54,7 @@ jobs:
 | `test_timeout` | Timeout for test execution in minutes | `5` |
 | `lint_command` | Command to run linters before tests | `''` |
 | `target_path` | Subdirectory path to restrict diff analysis to | `'.'` |
-| `exclude_paths` | Comma-separated glob patterns to ignore | `'vendor/**, generated/**, dist/**'` |
+| `exclude_paths` | Comma-separated glob patterns to ignore | `'.github/workflows/**, vendor/**, generated/**, dist/**'` |
 | `enable_test_generation` | Whether to write unit tests for uncovered code | `true` |
 | `max_prs_per_run` | Maximum atomic PRs to open in one run | `3` |
 | `max_line_diff` | Hard cap on total diff lines per atomic PR | `100` |

@@ -13,7 +13,7 @@ jobs:
       model: 'gemini-3.6-flash'
       lint_command: 'golangci-lint run'
       test_command: 'go test -v -race ./...'
-      exclude_paths: 'vendor/**, **/*.pb.go, **/*_gen.go'
+      exclude_paths: '.github/workflows/**, vendor/**, **/*.pb.go, **/*_gen.go'
       max_prs_per_run: 2
       draft_pr: true
     secrets:
