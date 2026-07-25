@@ -3,7 +3,7 @@ import { google } from '@ai-sdk/google';
 import { anthropic } from '@ai-sdk/anthropic';
 import { openai } from '@ai-sdk/openai';
 import { z } from 'zod';
-import { execSync, execFileSync } from 'child_process';
+import { execSync, execFileSync, ExecSyncOptionsWithStringEncoding } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -46,7 +46,7 @@ function getModel(prov: string, mod: string) {
 function runCmd(command: string, label: string, timeoutMs?: number): { success: boolean; output: string } {
     console.log(`Running ${label} command: ${command}`);
     try {
-        const execOptions: fs.ExecSyncOptionsWithStringEncoding = {
+        const execOptions: ExecSyncOptionsWithStringEncoding = {
             encoding: 'utf-8',
             stdio: ['pipe', 'pipe', 'pipe'],
         };
