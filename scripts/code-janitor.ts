@@ -41,6 +41,39 @@ function getModel(prov: string, mod: string) {
     }
 }
 
+function runCmd(command: string, label: string): { success: boolean; output: string } {
+    console.log(`Running ${label} command: ${command}`);
+    try {
+        const stdout = execSync(command, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+        if (stdout.trim()) {
+            console.log(stdout.trim());
+        }
+        return { success: true, output: stdout };
+    } catch (err: any) {
+        const stdout = err.stdout ? err.stdout.toString() : '';
+        const stderr = err.stderr ? err.stderr.toString() : '';
+        const combined = (stdout + '\n' + stderr).trim() || err.message || 'Command failed';
+        console.error(`❌ ${label} command failed:\n${combined}`);
+        return { success: false, output: combined };
+    }
+}
+
+function runVerification(lCmd: string, tCmd: string): { success: boolean; failureOutput: string; failedStep: string } {
+    if (lCmd) {
+        const lintRes = runCmd(lCmd, 'lint');
+        if (!lintRes.success) {
+            return { success: false, failureOutput: lintRes.output, failedStep: 'lint' };
+        }
+    }
+    if (tCmd) {
+        const testRes = runCmd(tCmd, 'test');
+        if (!testRes.success) {
+            return { success: false, failureOutput: testRes.output, failedStep: 'test' };
+        }
+    }
+    return { success: true, failureOutput: '', failedStep: '' };
+}
+
 async function main() {
     console.log(`🧹 Code Janitor starting analysis using provider: [${provider}] model: [${modelName}]`);
 
@@ -110,6 +143,12 @@ async function main() {
 
     const fixes = response.object.fixes;
     console.log(`Found ${fixes.length} proposed atomic improvements.`);
+    if (fixes.length > 0) {
+        console.log("Planned PRs:");
+        fixes.forEach((fix, idx) => {
+            console.log(`  ${idx + 1}. 🧹 ${fix.title}`);
+        });
+    }
 
     for (const fix of fixes) {
         const timestamp = Date.now();
@@ -130,20 +169,51 @@ async function main() {
             // Ensure file directory exists and apply update
             const absolutePath = path.resolve(fix.filePath);
             fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
-            fs.writeFileSync(absolutePath, fix.updatedContent, 'utf-8');
+            let currentContent = fix.updatedContent;
+            fs.writeFileSync(absolutePath, currentContent, 'utf-8');
 
             // Verify Diff Size Limit
             const diffStat = execSync('git diff --shortstat', { encoding: 'utf-8' });
             console.log(`Diff summary: ${diffStat.trim()}`);
 
-            // Execute Linters & Tests
-            if (lintCmd) {
-                console.log(`Running lint command: ${lintCmd}`);
-                execSync(lintCmd, { stdio: 'inherit' });
+            // First verification pass
+            let verifResult = runVerification(lintCmd, testCmd);
+
+            if (!verifResult.success) {
+                console.log(`\n⚠️ Verification failed during ${verifResult.failedStep}. Attempting auto-fix retry...`);
+
+                try {
+                    const retrySchema = z.object({
+                        explanation: z.string().describe('Explanation of how the test/lint failure is fixed'),
+                        updatedContent: z.string().describe('Full updated file content'),
+                    });
+
+                    const retrySystemPrompt = `
+    You are an expert software engineer fixing a failing test or lint check caused by a recent refactoring attempt.
+    Analyze the failure log output and the target file content, then generate a revised version of the file content that resolves the failures while preserving the core refactoring intent.
+`;
+                    const retryResponse = await generateObject({
+                        model: getModel(provider, modelName),
+                        schema: retrySchema,
+                        system: retrySystemPrompt,
+                        prompt: `Target File: ${fix.filePath}\n\nProposed Fix Title: ${fix.title}\n\nFailure Output (${verifResult.failedStep}):\n${verifResult.failureOutput}\n\nCurrent File Content:\n${currentContent}`,
+                    });
+
+                    console.log(`🤖 Auto-fix proposal: ${retryResponse.object.explanation}`);
+                    currentContent = retryResponse.object.updatedContent;
+                    fs.writeFileSync(absolutePath, currentContent, 'utf-8');
+
+                    console.log(`Rerunning verification after auto-fix attempt...`);
+                    verifResult = runVerification(lintCmd, testCmd);
+                } catch (retryErr) {
+                    console.error(`Failed during auto-fix generation/execution:`, retryErr);
+                    verifResult = { success: false, failureOutput: String(retryErr), failedStep: 'retry' };
+                }
             }
 
-            console.log(`Running test command: ${testCmd}`);
-            execSync(testCmd, { stdio: 'inherit' });
+            if (!verifResult.success) {
+                throw new Error(`Verification failed after initial run and retry attempt (${verifResult.failedStep}).`);
+            }
 
             // If tests pass, commit and open PR
             console.log(`Tests passed! Creating commit and PR...`);
@@ -167,6 +237,20 @@ async function main() {
 
         } catch (error) {
             console.error(`❌ Verification failed for fix '${fix.slug}'. Discarding branch...`, error);
+            try {
+                let failedDiff = '';
+                try {
+                    failedDiff = execSync('git diff HEAD', { encoding: 'utf-8' });
+                } catch {
+                    failedDiff = execSync('git diff', { encoding: 'utf-8' });
+                }
+                console.log(`\n=================== FAILED FIX DIFF (${fix.slug}) ===================`);
+                console.log(failedDiff.trim() || '(No diff output detected)');
+                console.log(`====================================================================\n`);
+            } catch (diffErr) {
+                console.error(`Failed to print git diff for '${fix.slug}':`, diffErr);
+            }
+
             try {
                 execFileSync('git', ['checkout', defaultBranch]);
                 execFileSync('git', ['reset', '--hard', defaultBranch]);
