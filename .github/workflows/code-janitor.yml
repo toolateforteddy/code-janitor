@@ -18,6 +18,11 @@ on:
         type: string
         required: false
         default: 'go test ./...'
+      test_timeout:
+        description: 'Timeout for test execution in minutes'
+        type: number
+        required: false
+        default: 5
       lint_command:
         description: 'Command to run linters before tests'
         type: string
@@ -109,6 +114,7 @@ jobs:
           AI_PROVIDER: ${{ inputs.provider }}
           AI_MODEL: ${{ inputs.model }}
           TEST_CMD: ${{ inputs.test_command }}
+          TEST_TIMEOUT: ${{ inputs.test_timeout }}
           LINT_CMD: ${{ inputs.lint_command }}
           TARGET_PATH: ${{ inputs.target_path }}
           EXCLUDE_PATHS: ${{ inputs.exclude_paths }}

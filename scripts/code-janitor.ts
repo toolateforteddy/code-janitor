@@ -20,6 +20,8 @@ process.chdir(targetWorkspace);
 const provider = (process.env.AI_PROVIDER || 'google').toLowerCase();
 const modelName = process.env.AI_MODEL || 'gemini-3.6-flash';
 const testCmd = process.env.TEST_CMD || 'go test ./...';
+const testTimeoutMinutes = parseInt(process.env.TEST_TIMEOUT || '5', 10);
+const testTimeoutMs = (isNaN(testTimeoutMinutes) || testTimeoutMinutes <= 0 ? 5 : testTimeoutMinutes) * 60 * 1000;
 const lintCmd = process.env.LINT_CMD || '';
 const targetPath = process.env.TARGET_PATH || '.';
 const excludePathsStr = process.env.EXCLUDE_PATHS || '';
@@ -41,10 +43,17 @@ function getModel(prov: string, mod: string) {
     }
 }
 
-function runCmd(command: string, label: string): { success: boolean; output: string } {
+function runCmd(command: string, label: string, timeoutMs?: number): { success: boolean; output: string } {
     console.log(`Running ${label} command: ${command}`);
     try {
-        const stdout = execSync(command, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+        const execOptions: fs.ExecSyncOptionsWithStringEncoding = {
+            encoding: 'utf-8',
+            stdio: ['pipe', 'pipe', 'pipe'],
+        };
+        if (timeoutMs && timeoutMs > 0) {
+            execOptions.timeout = timeoutMs;
+        }
+        const stdout = execSync(command, execOptions);
         if (stdout.trim()) {
             console.log(stdout.trim());
         }
@@ -52,13 +61,20 @@ function runCmd(command: string, label: string): { success: boolean; output: str
     } catch (err: any) {
         const stdout = err.stdout ? err.stdout.toString() : '';
         const stderr = err.stderr ? err.stderr.toString() : '';
-        const combined = (stdout + '\n' + stderr).trim() || err.message || 'Command failed';
+        let combined = (stdout + '\n' + stderr).trim();
+        if (err.code === 'ETIMEDOUT' || err.signal === 'SIGTERM') {
+            const timeoutMinutes = timeoutMs ? timeoutMs / 60000 : 0;
+            const timeoutMsg = `❌ Command timed out after ${timeoutMinutes} minute(s).`;
+            combined = combined ? `${combined}\n${timeoutMsg}` : timeoutMsg;
+        } else if (!combined) {
+            combined = err.message || 'Command failed';
+        }
         console.error(`❌ ${label} command failed:\n${combined}`);
         return { success: false, output: combined };
     }
 }
 
-function runVerification(lCmd: string, tCmd: string): { success: boolean; failureOutput: string; failedStep: string } {
+function runVerification(lCmd: string, tCmd: string, tTimeoutMs?: number): { success: boolean; failureOutput: string; failedStep: string } {
     if (lCmd) {
         const lintRes = runCmd(lCmd, 'lint');
         if (!lintRes.success) {
@@ -66,7 +82,7 @@ function runVerification(lCmd: string, tCmd: string): { success: boolean; failur
         }
     }
     if (tCmd) {
-        const testRes = runCmd(tCmd, 'test');
+        const testRes = runCmd(tCmd, 'test', tTimeoutMs);
         if (!testRes.success) {
             return { success: false, failureOutput: testRes.output, failedStep: 'test' };
         }
@@ -177,7 +193,7 @@ async function main() {
             console.log(`Diff summary: ${diffStat.trim()}`);
 
             // First verification pass
-            let verifResult = runVerification(lintCmd, testCmd);
+            let verifResult = runVerification(lintCmd, testCmd, testTimeoutMs);
 
             if (!verifResult.success) {
                 console.log(`\n⚠️ Verification failed during ${verifResult.failedStep}. Attempting auto-fix retry...`);
@@ -204,7 +220,7 @@ async function main() {
                     fs.writeFileSync(absolutePath, currentContent, 'utf-8');
 
                     console.log(`Rerunning verification after auto-fix attempt...`);
-                    verifResult = runVerification(lintCmd, testCmd);
+                    verifResult = runVerification(lintCmd, testCmd, testTimeoutMs);
                 } catch (retryErr) {
                     console.error(`Failed during auto-fix generation/execution:`, retryErr);
                     verifResult = { success: false, failureOutput: String(retryErr), failedStep: 'retry' };

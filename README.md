@@ -39,5 +39,24 @@ jobs:
       provider: 'google'
       model: 'gemini-3.6-flash'
       test_command: 'go test ./...'
+      test_timeout: 5
     secrets:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+```
+
+## ⚙️ Configuration Inputs
+
+| Input | Description | Default |
+| :--- | :--- | :--- |
+| `provider` | AI Provider (`google`, `anthropic`, `openai`) | `'google'` |
+| `model` | AI Model ID to execute | `'gemini-3.6-flash'` |
+| `test_command` | Command to run tests | `'go test ./...'` |
+| `test_timeout` | Timeout for test execution in minutes | `5` |
+| `lint_command` | Command to run linters before tests | `''` |
+| `target_path` | Subdirectory path to restrict diff analysis to | `'.'` |
+| `exclude_paths` | Comma-separated glob patterns to ignore | `'vendor/**, generated/**, dist/**'` |
+| `enable_test_generation` | Whether to write unit tests for uncovered code | `true` |
+| `max_prs_per_run` | Maximum atomic PRs to open in one run | `3` |
+| `max_line_diff` | Hard cap on total diff lines per atomic PR | `100` |
+| `reviewers` | Comma-separated GitHub handles or teams to request review | `''` |
+| `draft_pr` | Open PRs in Draft state | `true` |
