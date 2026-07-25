@@ -1,0 +1,35 @@
+name: Code Janitor (Monorepo)
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  sweep-matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: 'billing-service'
+            path: 'services/billing'
+            test_cmd: 'go test ./services/billing/...'
+            reviewers: 'my-org/billing-devs'
+
+          - name: 'auth-service'
+            path: 'pkg/auth'
+            test_cmd: 'go test ./pkg/auth/...'
+            reviewers: 'my-org/security-team'
+
+          - name: 'web-dashboard'
+            path: 'apps/dashboard'
+            test_cmd: 'npm test --prefix apps/dashboard'
+            reviewers: 'my-org/frontend-team'
+
+    uses: toolateforteddy/code-janitor/.github/workflows/code-janitor.yml@main
+    with:
+      target_path: ${{ matrix.path }}
+      test_command: ${{ matrix.test_cmd }}
+      reviewers: ${{ matrix.reviewers }}
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

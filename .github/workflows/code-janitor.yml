@@ -1,0 +1,126 @@
+name: Code Janitor Engine
+
+on:
+  workflow_call:
+    inputs:
+      provider:
+        description: 'AI Provider (google, anthropic, openai)'
+        type: string
+        required: false
+        default: 'google'
+      model:
+        description: 'Model ID to execute'
+        type: string
+        required: false
+        default: 'gemini-3.6-flash'
+      test_command:
+        description: 'Command to run tests (e.g., go test ./..., cargo test, npm test)'
+        type: string
+        required: false
+        default: 'go test ./...'
+      lint_command:
+        description: 'Command to run linters before tests'
+        type: string
+        required: false
+        default: ''
+      target_path:
+        description: 'Subdirectory path to restrict diff analysis to'
+        type: string
+        required: false
+        default: '.'
+      exclude_paths:
+        description: 'Comma-separated glob patterns to ignore'
+        type: string
+        required: false
+        default: 'vendor/**, generated/**, dist/**'
+      enable_test_generation:
+        description: 'Whether to write unit tests for uncovered code'
+        type: boolean
+        required: false
+        default: true
+      max_prs_per_run:
+        description: 'Maximum atomic PRs to open in one run'
+        type: number
+        required: false
+        default: 3
+      max_line_diff:
+        description: 'Hard cap on total diff lines per atomic PR'
+        type: number
+        required: false
+        default: 100
+      reviewers:
+        description: 'Comma-separated GitHub handles or teams to request review'
+        type: string
+        required: false
+        default: ''
+      draft_pr:
+        description: 'Open PRs in Draft state'
+        type: boolean
+        required: false
+        default: true
+
+    secrets:
+      GEMINI_API_KEY:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+      OPENAI_API_KEY:
+        required: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Target Repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for Merged PRs in Last 24 Hours
+        id: check_prs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_COUNT=$(gh pr list --state merged --search "merged:>=$(date -d '24 hours ago' +%Y-%m-%d)" --json number --jq 'length')
+          if [ "$PR_COUNT" -eq 0 ]; then
+            echo "No PRs merged recently. Exiting early."
+            echo "has_prs=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_prs=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout Code Janitor Engine
+        if: steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          repository: '${{ github.repository }}'
+          path: '.central-janitor'
+
+      - name: Setup Node.js
+        if: steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Execute Code Janitor Agent
+        if: steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AI_PROVIDER: ${{ inputs.provider }}
+          AI_MODEL: ${{ inputs.model }}
+          TEST_CMD: ${{ inputs.test_command }}
+          LINT_CMD: ${{ inputs.lint_command }}
+          TARGET_PATH: ${{ inputs.target_path }}
+          EXCLUDE_PATHS: ${{ inputs.exclude_paths }}
+          ENABLE_TEST_GEN: ${{ inputs.enable_test_generation }}
+          MAX_PRS: ${{ inputs.max_prs_per_run }}
+          MAX_LINE_DIFF: ${{ inputs.max_line_diff }}
+          REVIEWERS: ${{ inputs.reviewers }}
+          DRAFT_PR: ${{ inputs.draft_pr }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          cd .central-janitor/scripts
+          npm ci
+          npx tsx code-janitor.ts ../..

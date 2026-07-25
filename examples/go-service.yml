@@ -1,0 +1,20 @@
+name: Code Janitor (Go Service)
+
+on:
+  schedule:
+    - cron: '0 3 * * *' # 3:00 AM UTC
+  workflow_dispatch:
+
+jobs:
+  sweep:
+    uses: toolateforteddy/code-janitor/.github/workflows/code-janitor.yml@main
+    with:
+      provider: 'google'
+      model: 'gemini-3.6-flash'
+      lint_command: 'golangci-lint run'
+      test_command: 'go test -v -race ./...'
+      exclude_paths: 'vendor/**, **/*.pb.go, **/*_gen.go'
+      max_prs_per_run: 2
+      draft_pr: true
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
