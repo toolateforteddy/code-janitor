@@ -6,15 +6,12 @@ import { z } from 'zod';
 import { execSync, execFileSync, ExecSyncOptionsWithStringEncoding } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 
 // Set API key fallback for Google provider
 if (process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
     process.env.GOOGLE_GENERATIVE_AI_API_KEY = process.env.GEMINI_API_KEY;
 }
-
-// Parse arguments
-const targetWorkspace = process.argv[2] || process.cwd();
-process.chdir(targetWorkspace);
 
 // Environment Configurations
 const provider = (process.env.AI_PROVIDER || 'google').toLowerCase();
@@ -47,7 +44,7 @@ const fixesResponseSchema = z.object({
 
 export type FixProposal = z.infer<typeof fixProposalSchema>;
 
-function getModel(prov: string, mod: string) {
+export function getModel(prov: string, mod: string) {
     switch (prov) {
         case 'anthropic':
             return anthropic(mod || 'claude-3-5-sonnet-20241022');
@@ -59,7 +56,7 @@ function getModel(prov: string, mod: string) {
     }
 }
 
-function runCmd(command: string, label: string, timeoutMs?: number, cwd?: string): { success: boolean; output: string } {
+export function runCmd(command: string, label: string, timeoutMs?: number, cwd?: string): { success: boolean; output: string } {
     console.log(`Running ${label} command: ${command}`);
     try {
         const execOptions: ExecSyncOptionsWithStringEncoding = {
@@ -91,7 +88,7 @@ function runCmd(command: string, label: string, timeoutMs?: number, cwd?: string
     }
 }
 
-function runVerification(lCmd: string, tCmd: string, tTimeoutMs?: number, cwd?: string): { success: boolean; failureOutput: string; failedStep: string } {
+export function runVerification(lCmd: string, tCmd: string, tTimeoutMs?: number, cwd?: string): { success: boolean; failureOutput: string; failedStep: string } {
     if (lCmd) {
         const lintRes = runCmd(lCmd, 'lint', undefined, cwd);
         if (!lintRes.success) {
@@ -107,7 +104,7 @@ function runVerification(lCmd: string, tCmd: string, tTimeoutMs?: number, cwd?: 
     return { success: true, failureOutput: '', failedStep: '' };
 }
 
-function getDefaultBranch(): string {
+export function getDefaultBranch(): string {
     try {
         return execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf-8' }).trim() || 'main';
     } catch {
@@ -115,7 +112,7 @@ function getDefaultBranch(): string {
     }
 }
 
-function buildPathSpecArgs(target: string, excludesStr: string): string {
+export function buildPathSpecArgs(target: string, excludesStr: string): string {
     let pathSpecArgs = '';
     if (target && target !== '.') {
         pathSpecArgs += ` -- "${target}"`;
@@ -129,7 +126,7 @@ function buildPathSpecArgs(target: string, excludesStr: string): string {
     return pathSpecArgs;
 }
 
-function getGitDiff(pathSpecArgs: string): string {
+export function getGitDiff(pathSpecArgs: string): string {
     try {
         return execSync(`git diff HEAD~1 HEAD${pathSpecArgs}`, { encoding: 'utf-8' });
     } catch {
@@ -138,7 +135,7 @@ function getGitDiff(pathSpecArgs: string): string {
     }
 }
 
-async function generateFixProposals(diff: string): Promise<FixProposal[]> {
+export async function generateFixProposals(diff: string): Promise<FixProposal[]> {
     const systemPrompt = `
     You are an expert static analyzer and software maintainer.
     Analyze the recent git diffs and identify up to ${maxPRs} distinct, high-value improvements or edge-case unit tests.
@@ -161,7 +158,7 @@ async function generateFixProposals(diff: string): Promise<FixProposal[]> {
     return response.object.fixes;
 }
 
-async function attemptAutoFix(
+export async function attemptAutoFix(
     fix: FixProposal,
     failedStep: string,
     failureOutput: string,
@@ -205,7 +202,7 @@ async function attemptAutoFix(
     }
 }
 
-function createAndSubmitPR(fix: FixProposal, branchName: string, workDir: string) {
+export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir: string) {
     console.log(`Tests passed! Creating commit and PR...`);
     const execOpts = { cwd: workDir };
     execFileSync('git', ['config', 'user.name', 'Code Janitor Bot'], execOpts);
@@ -227,7 +224,7 @@ function createAndSubmitPR(fix: FixProposal, branchName: string, workDir: string
     console.log(` Successfully created PR for: ${fix.title}`);
 }
 
-function logFailedDiff(fix: FixProposal, workDir: string) {
+export function logFailedDiff(fix: FixProposal, workDir: string) {
     try {
         let failedDiff = '';
         try {
@@ -243,7 +240,7 @@ function logFailedDiff(fix: FixProposal, workDir: string) {
     }
 }
 
-function cleanupWorktree(worktreePath: string) {
+export function cleanupWorktree(worktreePath: string) {
     try {
         if (fs.existsSync(worktreePath)) {
             execFileSync('git', ['worktree', 'remove', '--force', worktreePath], { stdio: 'ignore' });
@@ -256,7 +253,7 @@ function cleanupWorktree(worktreePath: string) {
     }
 }
 
-async function processFixWorktree(fix: FixProposal, defaultBranch: string): Promise<boolean> {
+export async function processFixWorktree(fix: FixProposal, defaultBranch: string): Promise<boolean> {
     const timestamp = Date.now();
     const branchName = `janitor/${fix.slug}-${timestamp}`;
     const worktreePath = path.resolve(process.cwd(), `.janitor-worktree-${fix.slug}-${timestamp}`);
@@ -295,7 +292,7 @@ async function processFixWorktree(fix: FixProposal, defaultBranch: string): Prom
     }
 }
 
-async function processFixSequential(fix: FixProposal, defaultBranch: string): Promise<boolean> {
+export async function processFixSequential(fix: FixProposal, defaultBranch: string): Promise<boolean> {
     const timestamp = Date.now();
     const branchName = `janitor/${fix.slug}-${timestamp}`;
     const workDir = process.cwd();
@@ -342,7 +339,7 @@ async function processFixSequential(fix: FixProposal, defaultBranch: string): Pr
     }
 }
 
-async function processFixes(fixes: FixProposal[], defaultBranch: string) {
+export async function processFixes(fixes: FixProposal[], defaultBranch: string) {
     if (fixes.length === 0) return;
 
     let supportsWorktrees = false;
@@ -379,7 +376,7 @@ async function processFixes(fixes: FixProposal[], defaultBranch: string) {
     }
 }
 
-async function main() {
+export async function main() {
     console.log(`🧹 Code Janitor starting analysis using provider: [${provider}] model: [${modelName}]`);
 
     const defaultBranch = getDefaultBranch();
@@ -403,7 +400,23 @@ async function main() {
     await processFixes(fixes, defaultBranch);
 }
 
-main().catch((err) => {
-    console.error("Fatal Janitor Engine Error:", err);
-    process.exit(1);
-});
+export function isDirectExecution(): boolean {
+    if (!process.argv[1]) return false;
+    try {
+        const entryPath = path.resolve(process.argv[1]);
+        const currentPath = fileURLToPath(import.meta.url);
+        return entryPath === currentPath;
+    } catch {
+        return false;
+    }
+}
+
+if (isDirectExecution()) {
+    const targetWorkspace = process.argv[2] || process.cwd();
+    process.chdir(targetWorkspace);
+
+    main().catch((err) => {
+        console.error("Fatal Janitor Engine Error:", err);
+        process.exit(1);
+    });
+}
