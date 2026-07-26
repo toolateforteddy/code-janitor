@@ -8,6 +8,9 @@ on:
 jobs:
   sweep:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - name: Checkout Target Repo
         uses: actions/checkout@v7

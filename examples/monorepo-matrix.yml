@@ -8,6 +8,9 @@ on:
 jobs:
   sweep-matrix:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     strategy:
       fail-fast: false
       matrix:

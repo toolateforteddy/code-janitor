@@ -38,7 +38,11 @@ Code Janitor automatically detects your repository's language ecosystem, provisi
 ### 1. Add API Key Secret
 Add your provider key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY`) to your GitHub organization or repository secrets.
 
-### 2. Create Workflow
+### 2. Configure Workflow Permissions
+
+Ensure the workflow job is granted `contents: write` (to push fix branches) and `pull-requests: write` (to open PRs).
+
+### 3. Create Workflow
 
 Add `.github/workflows/code-janitor.yml` in your target repository:
 
@@ -54,6 +58,9 @@ on:
 jobs:
   sweep:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - name: Checkout Target Repo
         uses: actions/checkout@v7
@@ -82,6 +89,9 @@ on:
 
 jobs:
   sweep:
+    permissions:
+      contents: write
+      pull-requests: write
     uses: toolateforteddy/code-janitor/.github/workflows/code-janitor.yml@main
     with:
       provider: 'google'
@@ -92,6 +102,37 @@ jobs:
     secrets:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 ```
+
+---
+
+## 🔑 Required Repository Permissions & Setup
+
+If you encounter `Permission denied to github-actions[bot]` or HTTP 403 errors when pushing branches or opening PRs, ensure both your workflow file and repository settings permit GitHub Actions to write contents and create pull requests:
+
+### 1. Workflow YAML Permissions
+Your job must include explicit write permissions for `contents` and `pull-requests`:
+```yaml
+permissions:
+  contents: write
+  pull-requests: write
+```
+
+### 2. GitHub Repository Settings
+1. Navigate to your target repository's **Settings** > **Actions** > **General**.
+2. Scroll down to **Workflow permissions**.
+3. Under default permissions, **Read repository contents and packages permissions** is fine (and recommended) as long as your workflow YAML includes the `permissions:` block above. *(Alternatively, select **Read and write permissions** to grant write permissions by default).*
+4. Check **Allow GitHub Actions to create and approve pull requests** (Required).
+5. Click **Save**.
+
+Without these settings, `GITHUB_TOKEN` will be restricted to read-only access and pushing fix branches or creating PRs will fail with `403 Forbidden`.
+
+> [!TIP]
+> **Security Best Practice: Preventing Bot Self-Approval**  
+> GitHub groups PR creation and PR approval under a single repository policy toggle (*"Allow GitHub Actions to create and approve pull requests"*). To ensure Code Janitor or any GitHub Action workflow cannot self-approve or auto-merge PRs:
+> 1. Navigate to **Settings** > **Branches** (or **Rulesets**) in your repository.
+> 2. Edit your protection rule for your default branch (e.g. `main`).
+> 3. Enable **Require a pull request before merging**.
+> 4. Check **Require review from someone other than the last push / PR creator**.
 
 ---
 
