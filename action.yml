@@ -152,7 +152,8 @@ runs:
       with:
         node-version: ${{ inputs.node_version != '' && inputs.node_version || (hashFiles('.nvmrc') == '' && hashFiles('.node-version') == '' && hashFiles('package.json') == '' && '24' || null) }}
         node-version-file: ${{ inputs.node_version == '' && (hashFiles('.nvmrc') != '' && '.nvmrc' || (hashFiles('.node-version') != '' && '.node-version' || (hashFiles('package.json') != '' && 'package.json' || null))) || null }}
-        cache: 'npm'
+        cache: ${{ (hashFiles('package-lock.json') != '' || hashFiles('**/package-lock.json') != '' || hashFiles('npm-shrinkwrap.json') != '' || hashFiles('**/npm-shrinkwrap.json') != '') && 'npm' || (hashFiles('yarn.lock') != '' || hashFiles('**/yarn.lock') != '') && 'yarn' || (hashFiles('pnpm-lock.yaml') != '' || hashFiles('**/pnpm-lock.yaml') != '') && 'pnpm' || null }}
+        cache-dependency-path: ${{ (hashFiles('package-lock.json') != '' && 'package-lock.json') || (hashFiles('**/package-lock.json') != '' && '**/package-lock.json') || (hashFiles('yarn.lock') != '' && 'yarn.lock') || (hashFiles('**/yarn.lock') != '' && '**/yarn.lock') || (hashFiles('pnpm-lock.yaml') != '' && 'pnpm-lock.yaml') || (hashFiles('**/pnpm-lock.yaml') != '' && '**/pnpm-lock.yaml') || null }}
 
     - name: Setup Rust / Cargo
       if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('Cargo.toml') != '' || hashFiles('**/Cargo.toml') != '')
@@ -170,7 +171,7 @@ runs:
       with:
         python-version: ${{ inputs.python_version != '' && inputs.python_version || (hashFiles('pyproject.toml') == '' && hashFiles('.python-version') == '' && '3.11' || null) }}
         python-version-file: ${{ inputs.python_version == '' && (hashFiles('pyproject.toml') != '' && 'pyproject.toml' || (hashFiles('.python-version') != '' && '.python-version' || null)) || null }}
-        cache: 'pip'
+        cache: ${{ (hashFiles('pyproject.toml') != '' || hashFiles('**/pyproject.toml') != '' || hashFiles('requirements.txt') != '' || hashFiles('**/requirements.txt') != '' || hashFiles('Pipfile.lock') != '' || hashFiles('**/Pipfile.lock') != '') && 'pip' || null }}
 
     - name: Setup Java / Gradle (Android Kotlin)
       if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('build.gradle') != '' || hashFiles('build.gradle.kts') != '' || hashFiles('**/build.gradle') != '' || hashFiles('**/build.gradle.kts') != '')
