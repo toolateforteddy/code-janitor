@@ -7,14 +7,21 @@ on:
 
 jobs:
   sweep:
-    uses: toolateforteddy/code-janitor/.github/workflows/code-janitor.yml@main
-    with:
-      provider: 'google'
-      model: 'gemini-3.6-flash'
-      java_version: '17'
-      lint_command: './gradlew lint'
-      test_command: './gradlew test'
-      exclude_paths: '.github/workflows/**, build/**, **/build/**'
-      draft_pr: true
-    secrets:
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Target Repo
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Run Code Janitor
+        uses: toolateforteddy/code-janitor@main
+        with:
+          provider: 'google'
+          model: 'gemini-3.6-flash'
+          java_version: '17'
+          lint_command: './gradlew lint'
+          test_command: './gradlew test'
+          exclude_paths: '.github/workflows/**, build/**, **/build/**'
+          draft_pr: true
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}

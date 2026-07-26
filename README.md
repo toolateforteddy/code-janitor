@@ -39,8 +39,39 @@ Code Janitor automatically detects your repository's language ecosystem, provisi
 Add your provider key (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY`) to your GitHub organization or repository secrets.
 
 ### 2. Create Workflow
+
 Add `.github/workflows/code-janitor.yml` in your target repository:
 
+#### Option A: Composite Action (Recommended)
+```yaml
+name: Code Janitor Sweep
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Target Repo
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Run Code Janitor
+        uses: toolateforteddy/code-janitor@main
+        with:
+          provider: 'google'
+          model: 'gemini-3.6-flash'
+          test_command: 'go test ./...'
+          test_timeout: 5
+          janitor_mode: 'auto'
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+```
+
+#### Option B: Reusable Workflow
 ```yaml
 name: Code Janitor Sweep
 
@@ -61,6 +92,8 @@ jobs:
     secrets:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 ```
+
+---
 
 ## ⚙️ Configuration Inputs
 
@@ -84,3 +117,6 @@ jobs:
 | `python_version` | Python version (e.g. `"3.10"`, `"3.11"`, `"3.12"`). Reads `pyproject.toml` or `.python-version` if empty (fallback `"3.11"`) | `''` |
 | `rust_toolchain` | Rust toolchain channel (e.g. `"stable"`, `"nightly"`). Defaults to `"stable"` | `'stable'` |
 | `java_version` | Java/JDK version for Android Kotlin / Gradle (e.g. `"17"`, `"21"`). Defaults to `"17"` | `'17'` |
+| `gemini_api_key` | Gemini API key (can also be supplied via `GEMINI_API_KEY` env var) | `''` |
+| `anthropic_api_key` | Anthropic API key (can also be supplied via `ANTHROPIC_API_KEY` env var) | `''` |
+| `openai_api_key` | OpenAI API key (can also be supplied via `OPENAI_API_KEY` env var) | `''` |

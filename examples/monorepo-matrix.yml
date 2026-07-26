@@ -7,6 +7,7 @@ on:
 
 jobs:
   sweep-matrix:
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -26,10 +27,16 @@ jobs:
             test_cmd: 'npm test --prefix apps/dashboard'
             reviewers: 'my-org/frontend-team'
 
-    uses: toolateforteddy/code-janitor/.github/workflows/code-janitor.yml@main
-    with:
-      target_path: ${{ matrix.path }}
-      test_command: ${{ matrix.test_cmd }}
-      reviewers: ${{ matrix.reviewers }}
-    secrets:
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    steps:
+      - name: Checkout Target Repo
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Run Code Janitor
+        uses: toolateforteddy/code-janitor@main
+        with:
+          target_path: ${{ matrix.path }}
+          test_command: ${{ matrix.test_cmd }}
+          reviewers: ${{ matrix.reviewers }}
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}

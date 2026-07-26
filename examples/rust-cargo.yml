@@ -7,13 +7,20 @@ on:
 
 jobs:
   sweep:
-    uses: toolateforteddy/code-janitor/.github/workflows/code-janitor.yml@main
-    with:
-      provider: 'anthropic'
-      model: 'claude-3-5-sonnet-20241022'
-      lint_command: 'cargo clippy -- -D warnings'
-      test_command: 'cargo test'
-      max_line_diff: 80
-      draft_pr: false
-    secrets:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Target Repo
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Run Code Janitor
+        uses: toolateforteddy/code-janitor@main
+        with:
+          provider: 'anthropic'
+          model: 'claude-3-5-sonnet-20241022'
+          lint_command: 'cargo clippy -- -D warnings'
+          test_command: 'cargo test'
+          max_line_diff: 80
+          draft_pr: false
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}

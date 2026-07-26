@@ -1,0 +1,220 @@
+name: 'Code Janitor'
+description: 'An asynchronous, zero-friction GitHub Action that sweeps code merged in the last 24 hours, refactors for performance & idioms, adds edge-case unit tests, and opens small, atomic Pull Requests.'
+author: 'toolateforteddy'
+branding:
+  icon: 'zap'
+  color: 'blue'
+
+inputs:
+  provider:
+    description: 'AI Provider (google, anthropic, openai)'
+    required: false
+    default: 'google'
+  model:
+    description: 'Model ID to execute'
+    required: false
+    default: 'gemini-3.6-flash'
+  test_command:
+    description: 'Command to run tests (e.g., go test ./..., cargo test, npm test)'
+    required: false
+    default: 'go test ./...'
+  test_timeout:
+    description: 'Timeout for test execution in minutes'
+    required: false
+    default: '5'
+  lint_command:
+    description: 'Command to run linters before tests'
+    required: false
+    default: ''
+  target_path:
+    description: 'Subdirectory path to restrict diff analysis to'
+    required: false
+    default: '.'
+  exclude_paths:
+    description: 'Comma-separated glob patterns to ignore'
+    required: false
+    default: '.github/workflows/**, vendor/**, generated/**, dist/**'
+  enable_test_generation:
+    description: 'Whether to write unit tests for uncovered code'
+    required: false
+    default: 'true'
+  max_prs_per_run:
+    description: 'Maximum atomic PRs to open in one run'
+    required: false
+    default: '3'
+  max_line_diff:
+    description: 'Hard cap on total diff lines per atomic PR'
+    required: false
+    default: '100'
+  reviewers:
+    description: 'Comma-separated GitHub handles or teams to request review'
+    required: false
+    default: ''
+  draft_pr:
+    description: 'Open PRs in Draft state'
+    required: false
+    default: 'true'
+  janitor_mode:
+    description: 'Execution mode (auto, repair-only, refactor-only)'
+    required: false
+    default: 'auto'
+  go_version:
+    description: 'Go version (e.g. "1.22", "oldstable", "stable"). If empty, reads from go.mod.'
+    required: false
+    default: ''
+  node_version:
+    description: 'Node.js version (e.g. "18", "20", "22", "24"). If empty, reads from .nvmrc, .node-version, or package.json.'
+    required: false
+    default: ''
+  python_version:
+    description: 'Python version (e.g. "3.10", "3.11", "3.12"). If empty, reads from pyproject.toml or .python-version.'
+    required: false
+    default: ''
+  rust_toolchain:
+    description: 'Rust toolchain channel (e.g. "stable", "nightly", "1.75.0"). Defaults to "stable".'
+    required: false
+    default: 'stable'
+  java_version:
+    description: 'Java/JDK version for Android Kotlin / Gradle (e.g. "17", "21"). Defaults to "17".'
+    required: false
+    default: '17'
+  gemini_api_key:
+    description: 'Gemini API Key'
+    required: false
+    default: ''
+  anthropic_api_key:
+    description: 'Anthropic API Key'
+    required: false
+    default: ''
+  openai_api_key:
+    description: 'OpenAI API Key'
+    required: false
+    default: ''
+  github_token:
+    description: 'GitHub token for PR creation and CLI queries'
+    required: false
+    default: '${{ github.token }}'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Restore Janitor State Cursor
+      uses: actions/cache/restore@v4
+      with:
+        path: .janitor-state.json
+        key: janitor-cursor-${{ github.ref_name }}-${{ github.sha }}
+        restore-keys: |
+          janitor-cursor-${{ github.ref_name }}-
+          janitor-cursor-
+
+    - name: Check for Recent Activity or Cursor State Changes
+      id: check_prs
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        if [ -f .janitor-state.json ]; then
+          LAST_COMMIT=$(jq -r '.lastAnalyzedCommit // empty' .janitor-state.json 2>/dev/null || echo "")
+          CURRENT_HEAD=$(git rev-parse HEAD 2>/dev/null || echo "")
+          if [ -n "$LAST_COMMIT" ] && [ -n "$CURRENT_HEAD" ] && [ "$LAST_COMMIT" = "$CURRENT_HEAD" ]; then
+            echo "No new commits since last analyzed commit ($LAST_COMMIT). Exiting early."
+            echo "has_prs=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          if [ -n "$LAST_COMMIT" ]; then
+            echo "New commits detected since cursor commit ($LAST_COMMIT)."
+            echo "has_prs=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+        fi
+
+        PR_COUNT=$(gh pr list --state merged --search "merged:>=$(date -d '24 hours ago' +%Y-%m-%d)" --json number --jq 'length' 2>/dev/null || echo "0")
+        RECENT_COMMITS=$(git log --since="24 hours ago" -n 1 --format="%H" 2>/dev/null || echo "")
+        if [ "$PR_COUNT" -eq 0 ] && [ -z "$RECENT_COMMITS" ]; then
+          echo "No PRs merged or commits pushed in the last 24 hours. Exiting early."
+          echo "has_prs=false" >> $GITHUB_OUTPUT
+        else
+          echo "Recent activity (PRs or commits) detected."
+          echo "has_prs=true" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Setup Go
+      if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('go.mod') != '' || hashFiles('**/go.mod') != '')
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ inputs.go_version != '' && inputs.go_version || null }}
+        go-version-file: ${{ inputs.go_version == '' && hashFiles('go.mod') != '' && 'go.mod' || null }}
+        cache: true
+
+    - name: Setup Node.js (Project)
+      if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('package.json') != '' || hashFiles('**/package.json') != '')
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node_version != '' && inputs.node_version || (hashFiles('.nvmrc') == '' && hashFiles('.node-version') == '' && hashFiles('package.json') == '' && '24' || null) }}
+        node-version-file: ${{ inputs.node_version == '' && (hashFiles('.nvmrc') != '' && '.nvmrc' || (hashFiles('.node-version') != '' && '.node-version' || (hashFiles('package.json') != '' && 'package.json' || null))) || null }}
+        cache: 'npm'
+
+    - name: Setup Rust / Cargo
+      if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('Cargo.toml') != '' || hashFiles('**/Cargo.toml') != '')
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ inputs.rust_toolchain }}
+
+    - name: Cache Rust dependencies
+      if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('Cargo.toml') != '' || hashFiles('**/Cargo.toml') != '')
+      uses: Swatinem/rust-cache@v2
+
+    - name: Setup Python
+      if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('pyproject.toml') != '' || hashFiles('requirements.txt') != '' || hashFiles('.python-version') != '' || hashFiles('**/pyproject.toml') != '' || hashFiles('**/requirements.txt') != '')
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python_version != '' && inputs.python_version || (hashFiles('pyproject.toml') == '' && hashFiles('.python-version') == '' && '3.11' || null) }}
+        python-version-file: ${{ inputs.python_version == '' && (hashFiles('pyproject.toml') != '' && 'pyproject.toml' || (hashFiles('.python-version') != '' && '.python-version' || null)) || null }}
+        cache: 'pip'
+
+    - name: Setup Java / Gradle (Android Kotlin)
+      if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('build.gradle') != '' || hashFiles('build.gradle.kts') != '' || hashFiles('**/build.gradle') != '' || hashFiles('**/build.gradle.kts') != '')
+      uses: actions/setup-java@v4
+      with:
+        java-version: ${{ inputs.java_version }}
+        distribution: 'temurin'
+        cache: 'gradle'
+
+    - name: Setup Node for Janitor Engine
+      if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && hashFiles('package.json') == '' && hashFiles('**/package.json') == ''
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node_version != '' && inputs.node_version || '24' }}
+
+    - name: Execute Code Janitor Agent
+      if: steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        AI_PROVIDER: ${{ inputs.provider }}
+        AI_MODEL: ${{ inputs.model }}
+        TEST_CMD: ${{ inputs.test_command }}
+        TEST_TIMEOUT: ${{ inputs.test_timeout }}
+        LINT_CMD: ${{ inputs.lint_command }}
+        TARGET_PATH: ${{ inputs.target_path }}
+        EXCLUDE_PATHS: ${{ inputs.exclude_paths }}
+        ENABLE_TEST_GEN: ${{ inputs.enable_test_generation }}
+        MAX_PRS: ${{ inputs.max_prs_per_run }}
+        MAX_LINE_DIFF: ${{ inputs.max_line_diff }}
+        REVIEWERS: ${{ inputs.reviewers }}
+        DRAFT_PR: ${{ inputs.draft_pr }}
+        JANITOR_MODE: ${{ inputs.janitor_mode }}
+        GEMINI_API_KEY: ${{ inputs.gemini_api_key || env.GEMINI_API_KEY }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key || env.ANTHROPIC_API_KEY }}
+        OPENAI_API_KEY: ${{ inputs.openai_api_key || env.OPENAI_API_KEY }}
+      run: |
+        cd "${{ github.action_path }}/scripts"
+        npm ci
+        npx tsx code-janitor.ts "$GITHUB_WORKSPACE"
+
+    - name: Save Updated Janitor State Cursor
+      if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch')
+      uses: actions/cache/save@v4
+      with:
+        path: .janitor-state.json
+        key: janitor-cursor-${{ github.ref_name }}-${{ github.sha }}
