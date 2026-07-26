@@ -120,7 +120,7 @@ jobs:
             janitor-cursor-${{ github.ref_name }}-
             janitor-cursor-
 
-      - name: Check for Merged PRs or Cursor State Changes
+      - name: Check for Recent Activity or Cursor State Changes
         id: check_prs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -140,11 +140,13 @@ jobs:
             fi
           fi
 
-          PR_COUNT=$(gh pr list --state merged --search "merged:>=$(date -d '24 hours ago' +%Y-%m-%d)" --json number --jq 'length' 2>/dev/null || echo "1")
-          if [ "$PR_COUNT" -eq 0 ]; then
-            echo "No PRs merged recently. Exiting early."
+          PR_COUNT=$(gh pr list --state merged --search "merged:>=$(date -d '24 hours ago' +%Y-%m-%d)" --json number --jq 'length' 2>/dev/null || echo "0")
+          RECENT_COMMITS=$(git log --since="24 hours ago" -n 1 --format="%H" 2>/dev/null || echo "")
+          if [ "$PR_COUNT" -eq 0 ] && [ -z "$RECENT_COMMITS" ]; then
+            echo "No PRs merged or commits pushed in the last 24 hours. Exiting early."
             echo "has_prs=false" >> $GITHUB_OUTPUT
           else
+            echo "Recent activity (PRs or commits) detected."
             echo "has_prs=true" >> $GITHUB_OUTPUT
           fi
 
