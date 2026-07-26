@@ -10,11 +10,26 @@
 ## ✨ Features
 
 - 🧹 **Non-Blocking Sweeps:** Runs on your schedule (`cron`) or on demand (`workflow_dispatch`) without slowing down daytime PR reviews.
+- ⚡ **Auto-Detected Runtimes & Native Caching:** Automatically detects project ecosystems (Go, Node.js, Rust, Python, Android Kotlin / Gradle), provisions runtimes, and enables native build caching across workflow runs.
 - 🔧 **Automatic Repair Mode:** Runs an initial health check on main. If tests or linters are failing, Janitor automatically switches to **Repair Mode** (`🚨`) to generate minimal fix PRs for the broken build/tests before attempting refactors.
 - 📍 **Persistent History Tracking:** Uses a cached state cursor (`.janitor-state.json`) to track the last analyzed commit hash, ensuring unanalyzed commit windows are never lost across workflow runs.
 - 🎯 **Atomic PRs:** Splits refactors and fixes into tiny, single-responsibility PRs (<100 lines) so reviews take 30 seconds.
-- 🛡️ **Zero Broken PR Guarantee:** Runs your native linters and test commands (`go test`, `cargo test`, `npm test`, `pytest`) locally inside the runner. If a change breaks compilation or a test, **it is automatically discarded before a PR is opened**.
+- 🛡️ **Zero Broken PR Guarantee:** Runs your native linters and test commands (`go test`, `cargo test`, `npm test`, `pytest`, `./gradlew test`) locally inside the runner. If a change breaks compilation or a test, **it is automatically discarded before a PR is opened**.
 - 💸 **Near-Zero Running Cost ($0–$0.05/mo):** Powered by fast, affordable models like **Gemini 3.6 Flash**. Includes early exit logic if no recent code changes exist.
+
+---
+
+## 🛠️ Supported Languages & Auto-Detection
+
+Code Janitor automatically detects your repository's language ecosystem, provisions the required runtime environment, and enables native dependency and build caching across workflow runs. Callers can also explicitly specify custom language runtime versions.
+
+| Language / Stack | Auto-Detection File(s) | Default Runtime | Configurable Input | Native Caching |
+| :--- | :--- | :--- | :--- | :--- |
+| **Go** | `go.mod` | Read from `go.mod` | `go_version` | Go build & module cache |
+| **Node.js (JS / TS)** | `package.json` | Read from `.nvmrc`, `.node-version`, or `package.json` (fallback `24`) | `node_version` | npm cache |
+| **Rust / Cargo** | `Cargo.toml` | `stable` | `rust_toolchain` | Cargo registry & build cache |
+| **Python** | `pyproject.toml`, `requirements.txt` | Read from `pyproject.toml` or `.python-version` (fallback `3.11`) | `python_version` | pip cache |
+| **Android Kotlin (Gradle)** | `build.gradle`, `build.gradle.kts` | JDK `17` | `java_version` | Gradle cache |
 
 ---
 
@@ -64,3 +79,8 @@ jobs:
 | `reviewers` | Comma-separated GitHub handles or teams to request review | `''` |
 | `draft_pr` | Open PRs in Draft state | `true` |
 | `janitor_mode` | Execution mode (`auto`, `repair-only`, `refactor-only`) | `'auto'` |
+| `go_version` | Go version (e.g. `"1.22"`, `"stable"`). Reads `go.mod` if empty | `''` |
+| `node_version` | Node.js version (e.g. `"18"`, `"20"`, `"22"`, `"24"`). Reads `.nvmrc`, `.node-version`, or `package.json` if empty (fallback `"24"`) | `''` |
+| `python_version` | Python version (e.g. `"3.10"`, `"3.11"`, `"3.12"`). Reads `pyproject.toml` or `.python-version` if empty (fallback `"3.11"`) | `''` |
+| `rust_toolchain` | Rust toolchain channel (e.g. `"stable"`, `"nightly"`). Defaults to `"stable"` | `'stable'` |
+| `java_version` | Java/JDK version for Android Kotlin / Gradle (e.g. `"17"`, `"21"`). Defaults to `"17"` | `'17'` |

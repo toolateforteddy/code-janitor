@@ -68,6 +68,31 @@ on:
         type: string
         required: false
         default: 'auto'
+      go_version:
+        description: 'Go version (e.g. "1.22", "oldstable", "stable"). If empty, reads from go.mod.'
+        type: string
+        required: false
+        default: ''
+      node_version:
+        description: 'Node.js version (e.g. "18", "20", "22", "24"). If empty, reads from .nvmrc, .node-version, or package.json (defaults to "24").'
+        type: string
+        required: false
+        default: ''
+      python_version:
+        description: 'Python version (e.g. "3.10", "3.11", "3.12"). If empty, reads from pyproject.toml or .python-version (defaults to "3.11").'
+        type: string
+        required: false
+        default: ''
+      rust_toolchain:
+        description: 'Rust toolchain channel (e.g. "stable", "nightly", "1.75.0"). Defaults to "stable".'
+        type: string
+        required: false
+        default: 'stable'
+      java_version:
+        description: 'Java/JDK version for Android Kotlin / Gradle (e.g. "17", "21"). Defaults to "17".'
+        type: string
+        required: false
+        default: '17'
 
     secrets:
       GEMINI_API_KEY:
@@ -123,18 +148,63 @@ jobs:
             echo "has_prs=true" >> $GITHUB_OUTPUT
           fi
 
+      # -------------------------------------------------------------
+      # LANGUAGE AUTO-DETECTION & SETUP WITH FLEXIBLE VERSIONS & CACHING
+      # -------------------------------------------------------------
+      - name: Setup Go
+        if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('go.mod') != '' || hashFiles('**/go.mod') != '')
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go_version != '' && inputs.go_version || null }}
+          go-version-file: ${{ inputs.go_version == '' && hashFiles('go.mod') != '' && 'go.mod' || null }}
+          cache: true
+
+      - name: Setup Node.js (Project)
+        if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('package.json') != '' || hashFiles('**/package.json') != '')
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version != '' && inputs.node_version || (hashFiles('.nvmrc') == '' && hashFiles('.node-version') == '' && hashFiles('package.json') == '' && '24' || null) }}
+          node-version-file: ${{ inputs.node_version == '' && (hashFiles('.nvmrc') != '' && '.nvmrc' || (hashFiles('.node-version') != '' && '.node-version' || (hashFiles('package.json') != '' && 'package.json' || null))) || null }}
+          cache: 'npm'
+
+      - name: Setup Rust / Cargo
+        if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('Cargo.toml') != '' || hashFiles('**/Cargo.toml') != '')
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.rust_toolchain }}
+
+      - name: Cache Rust dependencies
+        if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('Cargo.toml') != '' || hashFiles('**/Cargo.toml') != '')
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Python
+        if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('pyproject.toml') != '' || hashFiles('requirements.txt') != '' || hashFiles('.python-version') != '' || hashFiles('**/pyproject.toml') != '' || hashFiles('**/requirements.txt') != '')
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version != '' && inputs.python_version || (hashFiles('pyproject.toml') == '' && hashFiles('.python-version') == '' && '3.11' || null) }}
+          python-version-file: ${{ inputs.python_version == '' && (hashFiles('pyproject.toml') != '' && 'pyproject.toml' || (hashFiles('.python-version') != '' && '.python-version' || null)) || null }}
+          cache: 'pip'
+
+      - name: Setup Java / Gradle (Android Kotlin)
+        if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('build.gradle') != '' || hashFiles('build.gradle.kts') != '' || hashFiles('**/build.gradle') != '' || hashFiles('**/build.gradle.kts') != '')
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ inputs.java_version }}
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Setup Node for Janitor Engine
+        if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && hashFiles('package.json') == '' && hashFiles('**/package.json') == ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version != '' && inputs.node_version || '24' }}
+
       - name: Checkout Code Janitor Engine
         if: steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch'
         uses: actions/checkout@v7
         with:
           repository: 'toolateforteddy/code-janitor'
           path: '.central-janitor'
-
-      - name: Setup Node.js
-        if: steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch'
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
 
       - name: Execute Code Janitor Agent
         if: steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch'
