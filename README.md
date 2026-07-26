@@ -10,7 +10,9 @@
 ## ✨ Features
 
 - 🧹 **Non-Blocking Sweeps:** Runs on your schedule (`cron`) or on demand (`workflow_dispatch`) without slowing down daytime PR reviews.
-- 🎯 **Atomic PRs:** Splits refactors into tiny, single-responsibility PRs (<100 lines) so reviews take 30 seconds.
+- 🔧 **Automatic Repair Mode:** Runs an initial health check on main. If tests or linters are failing, Janitor automatically switches to **Repair Mode** (`🚨`) to generate minimal fix PRs for the broken build/tests before attempting refactors.
+- 📍 **Persistent History Tracking:** Uses a cached state cursor (`.janitor-state.json`) to track the last analyzed commit hash, ensuring unanalyzed commit windows are never lost across workflow runs.
+- 🎯 **Atomic PRs:** Splits refactors and fixes into tiny, single-responsibility PRs (<100 lines) so reviews take 30 seconds.
 - 🛡️ **Zero Broken PR Guarantee:** Runs your native linters and test commands (`go test`, `cargo test`, `npm test`, `pytest`) locally inside the runner. If a change breaks compilation or a test, **it is automatically discarded before a PR is opened**.
 - 💸 **Near-Zero Running Cost ($0–$0.05/mo):** Powered by fast, affordable models like **Gemini 3.6 Flash**. Includes early exit logic if no recent code changes exist.
 
@@ -40,6 +42,7 @@ jobs:
       model: 'gemini-3.6-flash'
       test_command: 'go test ./...'
       test_timeout: 5
+      janitor_mode: 'auto'
     secrets:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 ```
@@ -60,3 +63,4 @@ jobs:
 | `max_line_diff` | Hard cap on total diff lines per atomic PR | `100` |
 | `reviewers` | Comma-separated GitHub handles or teams to request review | `''` |
 | `draft_pr` | Open PRs in Draft state | `true` |
+| `janitor_mode` | Execution mode (`auto`, `repair-only`, `refactor-only`) | `'auto'` |

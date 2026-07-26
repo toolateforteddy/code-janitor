@@ -20,6 +20,7 @@ const testCmd = process.env.TEST_CMD || 'go test ./...';
 const testTimeoutMinutes = parseInt(process.env.TEST_TIMEOUT || '5', 10);
 const testTimeoutMs = (isNaN(testTimeoutMinutes) || testTimeoutMinutes <= 0 ? 5 : testTimeoutMinutes) * 60 * 1000;
 const lintCmd = process.env.LINT_CMD || '';
+const mode = (process.env.JANITOR_MODE || 'auto').toLowerCase();
 const targetPath = process.env.TARGET_PATH || '.';
 const excludePathsStr = process.env.EXCLUDE_PATHS || '.github/workflows/**, vendor/**, generated/**, dist/**';
 const enableTestGen = process.env.ENABLE_TEST_GEN === 'true';
@@ -28,6 +29,13 @@ const maxLineDiff = parseInt(process.env.MAX_LINE_DIFF || '100', 10);
 const reviewers = process.env.REVIEWERS || '';
 const isDraft = process.env.DRAFT_PR === 'true';
 const maxConcurrency = parseInt(process.env.MAX_CONCURRENCY || '3', 10);
+
+export const STATE_FILE = '.janitor-state.json';
+
+export interface JanitorState {
+    lastAnalyzedCommit: string;
+    lastRunTimestamp: string;
+}
 
 // Schema for proposed atomic fixes
 const fixProposalSchema = z.object({
@@ -126,13 +134,94 @@ export function buildPathSpecArgs(target: string, excludesStr: string): string {
     return pathSpecArgs;
 }
 
-export function getGitDiff(pathSpecArgs: string): string {
+export function getGitDiff(pathSpecArgs: string, stateFilePath: string = STATE_FILE): { diff: string; currentHead: string; baseCommit: string } {
+    let currentHead = '';
     try {
-        return execSync(`git diff HEAD~1 HEAD${pathSpecArgs}`, { encoding: 'utf-8' });
+        currentHead = execSync('git rev-parse HEAD', { encoding: 'utf-8' }).trim();
     } catch {
-        console.warn("Unable to fetch diff between HEAD~1 and HEAD, reading current workspace diff...");
-        return execSync(`git diff${pathSpecArgs}`, { encoding: 'utf-8' });
+        currentHead = '';
     }
+
+    let baseCommit = '';
+
+    if (stateFilePath && fs.existsSync(stateFilePath)) {
+        try {
+            const raw = fs.readFileSync(stateFilePath, 'utf-8');
+            const state: JanitorState = JSON.parse(raw);
+            if (state.lastAnalyzedCommit) {
+                execSync(`git cat-file -e ${state.lastAnalyzedCommit}`, { stdio: 'ignore' });
+                baseCommit = state.lastAnalyzedCommit;
+                console.log(`📍 Found previous cursor at commit: ${baseCommit.slice(0, 7)}`);
+            }
+        } catch {
+            console.log("⚠️ Stale or invalid state cursor. Falling back to HEAD~1.");
+        }
+    }
+
+    if (!baseCommit && currentHead) {
+        try {
+            baseCommit = execSync('git rev-parse HEAD~1', { encoding: 'utf-8' }).trim();
+        } catch {
+            baseCommit = currentHead;
+        }
+    }
+
+    if (baseCommit && currentHead && baseCommit === currentHead) {
+        return { diff: '', currentHead, baseCommit };
+    }
+
+    try {
+        const diffRange = baseCommit && currentHead ? `${baseCommit}..${currentHead}` : 'HEAD~1 HEAD';
+        console.log(`🔍 Calculating diff across window: [${diffRange}]`);
+        const diff = execSync(`git diff ${diffRange}${pathSpecArgs}`, { encoding: 'utf-8' });
+        return { diff, currentHead, baseCommit };
+    } catch {
+        console.warn("Unable to fetch diff using revision range, reading current workspace diff...");
+        try {
+            const diff = execSync(`git diff${pathSpecArgs}`, { encoding: 'utf-8' });
+            return { diff, currentHead, baseCommit };
+        } catch {
+            return { diff: '', currentHead, baseCommit };
+        }
+    }
+}
+
+export function updateCursor(newHead: string, stateFilePath: string = STATE_FILE): void {
+    if (!newHead) return;
+    const state: JanitorState = {
+        lastAnalyzedCommit: newHead,
+        lastRunTimestamp: new Date().toISOString(),
+    };
+    try {
+        fs.writeFileSync(stateFilePath, JSON.stringify(state, null, 2), 'utf-8');
+        console.log(`📌 Advanced Janitor cursor to ${newHead.slice(0, 7)}`);
+    } catch (err) {
+        console.warn(`Failed to update cursor file ${stateFilePath}:`, err);
+    }
+}
+
+export async function generateRepairProposals(buildErrorLogs: string): Promise<FixProposal[]> {
+    const repairPrompt = `
+    You are an expert software engineer and debugger.
+    The project build or test suite is currently FAILING on the main branch.
+
+    Analyze the build errors provided below and generate minimal, atomic fixes to resolve the issue and make the test suite pass.
+    
+    RULES:
+    1. Fix ONLY what is necessary to resolve the build or test failures.
+    2. Do NOT introduce new features or unnecessary refactoring.
+    3. Keep diffs as concise as possible (under ~${maxLineDiff} total diff lines).
+  `;
+
+    console.log("🔧 Querying model for repair proposals...");
+    const response = await generateObject({
+        model: getModel(provider, modelName),
+        schema: fixesResponseSchema,
+        system: repairPrompt,
+        prompt: `Build/Test Error Logs:\n\n${buildErrorLogs.slice(0, 15000)}`,
+    });
+
+    return response.object.fixes;
 }
 
 export async function generateFixProposals(diff: string): Promise<FixProposal[]> {
@@ -202,19 +291,22 @@ export async function attemptAutoFix(
     }
 }
 
-export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir: string) {
+export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir: string, modeType: 'repair' | 'refactor' = 'refactor') {
     console.log(`Tests passed! Creating commit and PR...`);
     const execOpts = { cwd: workDir };
+    const emoji = modeType === 'repair' ? '🚨' : '🧹';
+    const prPrefix = modeType === 'repair' ? 'fix' : 'refactor';
+
     execFileSync('git', ['config', 'user.name', 'Code Janitor Bot'], execOpts);
     execFileSync('git', ['config', 'user.email', 'bot@codejanitor.local'], execOpts);
     execFileSync('git', ['add', fix.filePath], execOpts);
-    execFileSync('git', ['commit', '-m', `refactor: ${fix.title}`], execOpts);
+    execFileSync('git', ['commit', '-m', `${prPrefix}: ${fix.title}`], execOpts);
     execFileSync('git', ['push', 'origin', branchName], execOpts);
 
     const prArgs = [
         'pr', 'create',
-        '--title', `🧹 ${fix.title}`,
-        '--body', `${fix.description}\n\n_Generated by Code Janitor_`,
+        '--title', `${emoji} ${fix.title}`,
+        '--body', `${fix.description}\n\n_Generated automatically by Code Janitor [${modeType.toUpperCase()} mode]_`,
         '--head', branchName
     ];
     if (isDraft) prArgs.push('--draft');
@@ -253,7 +345,7 @@ export function cleanupWorktree(worktreePath: string) {
     }
 }
 
-export async function processFixWorktree(fix: FixProposal, defaultBranch: string): Promise<boolean> {
+export async function processFixWorktree(fix: FixProposal, defaultBranch: string, modeType: 'repair' | 'refactor' = 'refactor'): Promise<boolean> {
     const timestamp = Date.now();
     const branchName = `janitor/${fix.slug}-${timestamp}`;
     const worktreePath = path.resolve(process.cwd(), `.janitor-worktree-${fix.slug}-${timestamp}`);
@@ -281,7 +373,7 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
             throw new Error(`Verification failed after initial run and retry attempt (${verifResult.failedStep}).`);
         }
 
-        createAndSubmitPR(fix, branchName, worktreePath);
+        createAndSubmitPR(fix, branchName, worktreePath, modeType);
         return true;
     } catch (error) {
         console.error(`❌ Verification failed for fix '${fix.slug}'. Cleaning up...`, error);
@@ -292,7 +384,7 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
     }
 }
 
-export async function processFixSequential(fix: FixProposal, defaultBranch: string): Promise<boolean> {
+export async function processFixSequential(fix: FixProposal, defaultBranch: string, modeType: 'repair' | 'refactor' = 'refactor'): Promise<boolean> {
     const timestamp = Date.now();
     const branchName = `janitor/${fix.slug}-${timestamp}`;
     const workDir = process.cwd();
@@ -326,7 +418,7 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
             throw new Error(`Verification failed after initial run and retry attempt (${verifResult.failedStep}).`);
         }
 
-        createAndSubmitPR(fix, branchName, workDir);
+        createAndSubmitPR(fix, branchName, workDir, modeType);
         return true;
     } catch (error) {
         console.error(`❌ Verification failed for fix '${fix.slug}'. Discarding branch...`, error);
@@ -339,7 +431,7 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
     }
 }
 
-export async function processFixes(fixes: FixProposal[], defaultBranch: string) {
+export async function processFixes(fixes: FixProposal[], defaultBranch: string, modeType: 'repair' | 'refactor' = 'refactor') {
     if (fixes.length === 0) return;
 
     let supportsWorktrees = false;
@@ -359,7 +451,7 @@ export async function processFixes(fixes: FixProposal[], defaultBranch: string) 
             while (queue.length > 0) {
                 const fix = queue.shift();
                 if (fix) {
-                    await processFixWorktree(fix, defaultBranch);
+                    await processFixWorktree(fix, defaultBranch, modeType);
                 }
             }
         });
@@ -368,23 +460,77 @@ export async function processFixes(fixes: FixProposal[], defaultBranch: string) 
         console.log(`🔄 Processing ${fixes.length} fixes sequentially...`);
         for (const fix of fixes) {
             if (supportsWorktrees) {
-                await processFixWorktree(fix, defaultBranch);
+                await processFixWorktree(fix, defaultBranch, modeType);
             } else {
-                await processFixSequential(fix, defaultBranch);
+                await processFixSequential(fix, defaultBranch, modeType);
             }
         }
     }
 }
 
 export async function main() {
-    console.log(`🧹 Code Janitor starting analysis using provider: [${provider}] model: [${modelName}]`);
+    console.log(`🧹 Code Janitor initializing [provider: ${provider} | model: ${modelName} | mode: ${mode}]`);
 
     const defaultBranch = getDefaultBranch();
+
+    // -------------------------------------------------------------
+    // STEP 1: INITIAL HEALTH CHECK
+    // -------------------------------------------------------------
+    console.log("🔍 Checking main branch health...");
+    const verifResult = runVerification(lintCmd, testCmd, testTimeoutMs);
+
+    let isBroken = false;
+    let buildErrorLogs = '';
+
+    if (!verifResult.success) {
+        isBroken = true;
+        buildErrorLogs = verifResult.failureOutput;
+        console.log("⚠️ Failures detected on main branch!");
+    } else {
+        console.log("✅ Main branch is clean and healthy!");
+    }
+
+    // -------------------------------------------------------------
+    // STEP 2: REPAIR SWEEP (Triggers if main is broken)
+    // -------------------------------------------------------------
+    if (isBroken) {
+        if (mode === 'refactor-only') {
+            console.log("⛔ Main branch is failing and mode is 'refactor-only'. Aborting run to avoid bad refactors.");
+            return;
+        }
+
+        console.log("🔧 Entering REPAIR mode to fix failing tests/lints...");
+        const repairFixes = await generateRepairProposals(buildErrorLogs);
+        console.log(`Found ${repairFixes.length} proposed repair tasks.`);
+        if (repairFixes.length > 0) {
+            console.log("Planned Repair PRs:");
+            repairFixes.forEach((fix, idx) => {
+                console.log(`  ${idx + 1}. 🚨 ${fix.title}`);
+            });
+        }
+
+        await processFixes(repairFixes, defaultBranch, 'repair');
+        console.log("🛑 Repair sweep complete. Skipping refactor sweep until main is green.");
+        return; // STOP EXECUTION HERE — Do not attempt refactoring broken code
+    }
+
+    // -------------------------------------------------------------
+    // STEP 3: REFACTOR SWEEP (Triggers only if main is clean)
+    // -------------------------------------------------------------
+    if (mode === 'repair-only') {
+        console.log("✅ Main branch is clean and mode is 'repair-only'. Nothing to fix.");
+        return;
+    }
+
+    console.log("✨ Main branch is clean. Entering REFACTOR mode...");
     const pathSpecArgs = buildPathSpecArgs(targetPath, excludePathsStr);
-    const recentDiff = getGitDiff(pathSpecArgs);
+    const { diff: recentDiff, currentHead } = getGitDiff(pathSpecArgs);
 
     if (!recentDiff.trim()) {
         console.log("No recent diff content detected. Janitor task completed.");
+        if (currentHead) {
+            updateCursor(currentHead);
+        }
         return;
     }
 
@@ -397,7 +543,11 @@ export async function main() {
         });
     }
 
-    await processFixes(fixes, defaultBranch);
+    await processFixes(fixes, defaultBranch, 'refactor');
+
+    if (currentHead) {
+        updateCursor(currentHead);
+    }
 }
 
 export function isDirectExecution(): boolean {

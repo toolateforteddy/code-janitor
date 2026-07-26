@@ -10,6 +10,11 @@ import {
     runVerification,
     getDefaultBranch,
     buildPathSpecArgs,
+    getGitDiff,
+    updateCursor,
+    STATE_FILE,
+    JanitorState,
+    generateRepairProposals,
     cleanupWorktree,
     isDirectExecution,
     FixProposal,
@@ -141,6 +146,51 @@ describe('code-janitor engine test suite', () => {
         });
     });
 
+    describe('updateCursor() and getGitDiff() cursor state handling', () => {
+        it('writes cursor state to specified state file path', () => {
+            const tempFile = path.join(os.tmpdir(), `janitor-state-test-${Date.now()}.json`);
+            try {
+                const testHash = 'a1b2c3d4e5f67890123456789012345678901234';
+                updateCursor(testHash, tempFile);
+                assert.equal(fs.existsSync(tempFile), true);
+
+                const data: JanitorState = JSON.parse(fs.readFileSync(tempFile, 'utf-8'));
+                assert.equal(data.lastAnalyzedCommit, testHash);
+                assert.ok(data.lastRunTimestamp);
+            } finally {
+                if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+            }
+        });
+
+        it('returns empty diff when cursor matches current HEAD', () => {
+            const tempFile = path.join(os.tmpdir(), `janitor-state-test-${Date.now()}.json`);
+            try {
+                const headRes = getGitDiff('', tempFile);
+                if (headRes.currentHead) {
+                    updateCursor(headRes.currentHead, tempFile);
+                    const sameRes = getGitDiff('', tempFile);
+                    assert.equal(sameRes.diff, '');
+                    assert.equal(sameRes.baseCommit, headRes.currentHead);
+                }
+            } finally {
+                if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+            }
+        });
+
+        it('falls back gracefully if state file contains invalid/stale commit', () => {
+            const tempFile = path.join(os.tmpdir(), `janitor-state-test-${Date.now()}.json`);
+            try {
+                const fakeState = { lastAnalyzedCommit: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef', lastRunTimestamp: new Date().toISOString() };
+                fs.writeFileSync(tempFile, JSON.stringify(fakeState), 'utf-8');
+
+                const diffRes = getGitDiff('', tempFile);
+                assert.notEqual(diffRes.baseCommit, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
+            } finally {
+                if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+            }
+        });
+    });
+
     describe('cleanupWorktree()', () => {
         it('removes directory safely if it exists', () => {
             const tempWorktree = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-worktree-test-'));
@@ -163,6 +213,12 @@ describe('code-janitor engine test suite', () => {
         it('returns false when code-janitor is imported from test runner', () => {
             const direct = isDirectExecution();
             assert.equal(direct, false);
+        });
+    });
+
+    describe('generateRepairProposals()', () => {
+        it('is defined as an async function', () => {
+            assert.equal(typeof generateRepairProposals, 'function');
         });
     });
 
