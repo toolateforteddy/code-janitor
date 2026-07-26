@@ -99,7 +99,7 @@ runs:
   using: 'composite'
   steps:
     - name: Restore Janitor State Cursor
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: .janitor-state.json
         key: janitor-cursor-${{ github.ref_name }}-${{ github.sha }}
@@ -140,7 +140,7 @@ runs:
 
     - name: Setup Go
       if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('go.mod') != '' || hashFiles('**/go.mod') != '')
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version: ${{ inputs.go_version != '' && inputs.go_version || null }}
         go-version-file: ${{ inputs.go_version == '' && hashFiles('go.mod') != '' && 'go.mod' || null }}
@@ -148,7 +148,7 @@ runs:
 
     - name: Setup Node.js (Project)
       if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('package.json') != '' || hashFiles('**/package.json') != '')
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v7
       with:
         node-version: ${{ inputs.node_version != '' && inputs.node_version || (hashFiles('.nvmrc') == '' && hashFiles('.node-version') == '' && hashFiles('package.json') == '' && '24' || null) }}
         node-version-file: ${{ inputs.node_version == '' && (hashFiles('.nvmrc') != '' && '.nvmrc' || (hashFiles('.node-version') != '' && '.node-version' || (hashFiles('package.json') != '' && 'package.json' || null))) || null }}
@@ -166,7 +166,7 @@ runs:
 
     - name: Setup Python
       if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('pyproject.toml') != '' || hashFiles('requirements.txt') != '' || hashFiles('.python-version') != '' || hashFiles('**/pyproject.toml') != '' || hashFiles('**/requirements.txt') != '')
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v7
       with:
         python-version: ${{ inputs.python_version != '' && inputs.python_version || (hashFiles('pyproject.toml') == '' && hashFiles('.python-version') == '' && '3.11' || null) }}
         python-version-file: ${{ inputs.python_version == '' && (hashFiles('pyproject.toml') != '' && 'pyproject.toml' || (hashFiles('.python-version') != '' && '.python-version' || null)) || null }}
@@ -174,7 +174,7 @@ runs:
 
     - name: Setup Java / Gradle (Android Kotlin)
       if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('build.gradle') != '' || hashFiles('build.gradle.kts') != '' || hashFiles('**/build.gradle') != '' || hashFiles('**/build.gradle.kts') != '')
-      uses: actions/setup-java@v4
+      uses: actions/setup-java@v5
       with:
         java-version: ${{ inputs.java_version }}
         distribution: 'temurin'
@@ -182,7 +182,7 @@ runs:
 
     - name: Setup Node for Janitor Engine
       if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && hashFiles('package.json') == '' && hashFiles('**/package.json') == ''
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v7
       with:
         node-version: ${{ inputs.node_version != '' && inputs.node_version || '24' }}
 
@@ -214,7 +214,7 @@ runs:
 
     - name: Save Updated Janitor State Cursor
       if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch')
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v6
       with:
         path: .janitor-state.json
         key: janitor-cursor-${{ github.ref_name }}-${{ github.sha }}
