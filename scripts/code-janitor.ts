@@ -301,7 +301,13 @@ export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir:
     execFileSync('git', ['config', 'user.email', 'bot@codejanitor.local'], execOpts);
     execFileSync('git', ['add', fix.filePath], execOpts);
     execFileSync('git', ['commit', '-m', `${prPrefix}: ${fix.title}`], execOpts);
-    execFileSync('git', ['push', 'origin', branchName], execOpts);
+
+    try {
+        execFileSync('git', ['push', 'origin', branchName], execOpts);
+    } catch (err) {
+        console.error(`❌ Failed to push branch '${branchName}' to origin:`, err);
+        throw new Error(`Failed to push branch '${branchName}' to origin: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     const prArgs = [
         'pr', 'create',
@@ -312,8 +318,13 @@ export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir:
     if (isDraft) prArgs.push('--draft');
     if (reviewers) prArgs.push('--reviewer', reviewers);
 
-    execFileSync('gh', prArgs, { stdio: 'inherit', cwd: workDir });
-    console.log(` Successfully created PR for: ${fix.title}`);
+    try {
+        execFileSync('gh', prArgs, { stdio: 'inherit', cwd: workDir });
+        console.log(` Successfully created PR for: ${fix.title}`);
+    } catch (err) {
+        console.error(`❌ Failed to create pull request via GitHub CLI:`, err);
+        throw new Error(`Failed to create pull request via GitHub CLI: ${err instanceof Error ? err.message : String(err)}`);
+    }
 }
 
 export function logFailedDiff(fix: FixProposal, workDir: string) {
@@ -370,15 +381,16 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
         }
 
         if (!verifResult.success) {
-            throw new Error(`Verification failed after initial run and retry attempt (${verifResult.failedStep}).`);
+            console.error(`❌ Verification failed for fix '${fix.slug}'. Cleaning up...`);
+            logFailedDiff(fix, worktreePath);
+            return false;
         }
 
         createAndSubmitPR(fix, branchName, worktreePath, modeType);
         return true;
     } catch (error) {
-        console.error(`❌ Verification failed for fix '${fix.slug}'. Cleaning up...`, error);
-        logFailedDiff(fix, worktreePath);
-        return false;
+        console.error(`❌ Error processing fix '${fix.slug}':`, error);
+        throw error;
     } finally {
         cleanupWorktree(worktreePath);
     }
@@ -389,16 +401,16 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
     const branchName = `janitor/${fix.slug}-${timestamp}`;
     const workDir = process.cwd();
 
+    console.log(`\n--- Processing Fix (Sequential): ${fix.title} ---`);
+    execFileSync('git', ['checkout', defaultBranch]);
     try {
-        console.log(`\n--- Processing Fix (Sequential): ${fix.title} ---`);
-        execFileSync('git', ['checkout', defaultBranch]);
-        try {
-            execFileSync('git', ['reset', '--hard', `origin/${defaultBranch}`]);
-        } catch {
-            execFileSync('git', ['reset', '--hard', defaultBranch]);
-        }
-        execFileSync('git', ['checkout', '-b', branchName]);
+        execFileSync('git', ['reset', '--hard', `origin/${defaultBranch}`]);
+    } catch {
+        execFileSync('git', ['reset', '--hard', defaultBranch]);
+    }
+    execFileSync('git', ['checkout', '-b', branchName]);
 
+    try {
         const absolutePath = path.resolve(workDir, fix.filePath);
         fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
         let currentContent = fix.updatedContent;
@@ -415,19 +427,24 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
         }
 
         if (!verifResult.success) {
-            throw new Error(`Verification failed after initial run and retry attempt (${verifResult.failedStep}).`);
+            console.error(`❌ Verification failed for fix '${fix.slug}'. Discarding branch...`);
+            logFailedDiff(fix, workDir);
+            try {
+                execFileSync('git', ['checkout', defaultBranch]);
+                execFileSync('git', ['reset', '--hard', defaultBranch]);
+            } catch { /* ignore */ }
+            return false;
         }
 
         createAndSubmitPR(fix, branchName, workDir, modeType);
         return true;
     } catch (error) {
-        console.error(`❌ Verification failed for fix '${fix.slug}'. Discarding branch...`, error);
-        logFailedDiff(fix, workDir);
+        console.error(`❌ Error processing fix '${fix.slug}':`, error);
         try {
             execFileSync('git', ['checkout', defaultBranch]);
             execFileSync('git', ['reset', '--hard', defaultBranch]);
         } catch { /* ignore */ }
-        return false;
+        throw error;
     }
 }
 
@@ -444,6 +461,8 @@ export async function processFixes(fixes: FixProposal[], defaultBranch: string, 
         supportsWorktrees = false;
     }
 
+    const pushErrors: Error[] = [];
+
     if (supportsWorktrees && maxConcurrency > 1) {
         console.log(`⚡ Processing ${fixes.length} fixes in parallel (max concurrency: ${maxConcurrency})...`);
         const queue = [...fixes];
@@ -451,7 +470,11 @@ export async function processFixes(fixes: FixProposal[], defaultBranch: string, 
             while (queue.length > 0) {
                 const fix = queue.shift();
                 if (fix) {
-                    await processFixWorktree(fix, defaultBranch, modeType);
+                    try {
+                        await processFixWorktree(fix, defaultBranch, modeType);
+                    } catch (err) {
+                        pushErrors.push(err instanceof Error ? err : new Error(String(err)));
+                    }
                 }
             }
         });
@@ -459,12 +482,20 @@ export async function processFixes(fixes: FixProposal[], defaultBranch: string, 
     } else {
         console.log(`🔄 Processing ${fixes.length} fixes sequentially...`);
         for (const fix of fixes) {
-            if (supportsWorktrees) {
-                await processFixWorktree(fix, defaultBranch, modeType);
-            } else {
-                await processFixSequential(fix, defaultBranch, modeType);
+            try {
+                if (supportsWorktrees) {
+                    await processFixWorktree(fix, defaultBranch, modeType);
+                } else {
+                    await processFixSequential(fix, defaultBranch, modeType);
+                }
+            } catch (err) {
+                pushErrors.push(err instanceof Error ? err : new Error(String(err)));
             }
         }
+    }
+
+    if (pushErrors.length > 0) {
+        throw new Error(`Failed to push/submit ${pushErrors.length} PR(s):\n` + pushErrors.map(e => ` - ${e.message}`).join('\n'));
     }
 }
 

@@ -18,6 +18,7 @@ import {
     cleanupWorktree,
     isDirectExecution,
     FixProposal,
+    createAndSubmitPR,
 } from './code-janitor.js';
 
 describe('code-janitor engine test suite', () => {
@@ -222,4 +223,25 @@ describe('code-janitor engine test suite', () => {
         });
     });
 
+    describe('createAndSubmitPR() and push failure error propagation', () => {
+        it('throws an error when git push fails in non-git directory', () => {
+            const mockFix: FixProposal = {
+                filePath: 'dummy.txt',
+                slug: 'dummy-fix',
+                title: 'Dummy Fix',
+                description: 'A dummy fix description',
+                updatedContent: 'hello world'
+            };
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-test-pushfail-'));
+            try {
+                assert.throws(() => {
+                    createAndSubmitPR(mockFix, 'janitor/dummy-branch', tempDir);
+                });
+            } finally {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            }
+        });
+    });
+
 });
+
