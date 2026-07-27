@@ -35,6 +35,7 @@ export async function generateRepairProposals(buildErrorLogs: string): Promise<F
     6. PRESERVE API CONTRACTS: If you modify a function signature, update all relevant caller sites across modified files in 'changes'.
     7. NO UNJUSTIFIED SUPPRESSIONS & VALID APIS: Do NOT resolve warnings or errors by adding language suppression annotations (e.g. @Suppress) or deleting callers. Ensure imported standard library functions exist and are valid.
     8. RESPECT IDIOMATIC TEST PLACEMENT: Only embed in-file tests if the target language natively supports conditional test compilation within source files (e.g., #[cfg(test)] in Rust). In languages where tests belong in separate test files or directories (e.g. Java/Kotlin src/test/, Go *_test.go, JS/TS *.test.ts or __tests__/), put tests in a dedicated test file in 'changes'.
+    9. NON-TRIVIAL CHANGES REQUIRED: Each file in 'changes' MUST contain actual code additions, deletions, or modifications to resolve the failure. Do NOT output proposals where 'updatedContent' is identical to existing file content.
   `;
 
     console.log("🔧 Querying model for repair proposals...");
@@ -63,6 +64,7 @@ export async function generateFixProposals(diff: string): Promise<FixProposal[]>
     7. PRESERVE API CONTRACTS: If you modify a function signature, update all relevant call sites across modified files in 'changes'.
     8. NO UNJUSTIFIED SUPPRESSIONS & VALID APIS: Do NOT swallow warnings or delete callers. Verify that all standard library functions and imports exist before using them.
     9. RESPECT IDIOMATIC TEST PLACEMENT: Follow language conventions for test file structure and placement. Do not pollute production source files with test framework imports or test runner annotations.
+    10. NON-TRIVIAL CHANGES REQUIRED: Every proposed file change MUST include concrete code modifications, additions, or deletions compared to existing code. Do NOT output a proposal if 'updatedContent' is identical to the current code.
   `;
 
     console.log("🤖 Querying model for refactor proposals...");

@@ -16,7 +16,7 @@ import { runVerification, logFailedDiff, cleanupWorktree } from './git.js';
 import { validateFixIntegrity } from './integrity.js';
 import { attemptAutoFix } from './ai.js';
 
-export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir: string, modeType: 'repair' | 'refactor' = 'refactor') {
+export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir: string, modeType: 'repair' | 'refactor' = 'refactor'): boolean {
     const execOpts: ExecFileSyncOptions = { cwd: workDir, stdio: ['pipe', 'pipe', 'pipe'] };
     const emoji = modeType === 'repair' ? '🚨' : '🧹';
     const prPrefix = modeType === 'repair' ? 'fix' : 'refactor';
@@ -28,7 +28,10 @@ export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir:
         execFileSync('git', ['config', 'user.email', 'bot@codejanitor.local'], execOpts);
         for (const change of changes) {
             if (change.filePath) {
-                execFileSync('git', ['add', change.filePath.trim()], execOpts);
+                const cleanPath = change.filePath.trim().replace(/^\.\//, '').replace(/^\/+/, '');
+                if (fs.existsSync(path.resolve(workDir, cleanPath))) {
+                    execFileSync('git', ['add', cleanPath], execOpts);
+                }
             }
         }
         execFileSync('git', ['add', '-A'], execOpts);
@@ -36,7 +39,8 @@ export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir:
         const status = execFileSync('git', ['status', '--porcelain'], { cwd: workDir, stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' });
         if (!status.trim()) {
             const targetFile = fix.filePath || (changes.length > 0 ? changes.map(c => c.filePath).join(', ') : fix.slug);
-            throw new Error(`No staged changes found in worktree for file: ${targetFile}`);
+            console.warn(`⚠️ No staged changes found in worktree for fix '${fix.slug}' (${targetFile}). Skipping PR creation.`);
+            return false;
         }
 
         const commitMessage = `${prPrefix}: ${fix.title}`;
@@ -67,6 +71,7 @@ export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir:
     try {
         execFileSync('gh', prArgs, { stdio: 'inherit', cwd: workDir });
         console.log(` Successfully created PR for: ${fix.title}`);
+        return true;
     } catch (err) {
         console.error(`❌ Failed to create pull request via GitHub CLI:`, err);
         throw new Error(`Failed to create pull request via GitHub CLI: ${err instanceof Error ? err.message : String(err)}`);
@@ -86,14 +91,20 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
         const originalContents = new Map<string, string>();
 
         for (const change of changes) {
-            const absolutePath = path.resolve(worktreePath, change.filePath);
+            const cleanPath = change.filePath.trim().replace(/^\.\//, '').replace(/^\/+/, '');
+            change.filePath = cleanPath;
+            const absolutePath = path.resolve(worktreePath, cleanPath);
             fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
             const orig = fs.existsSync(absolutePath) ? fs.readFileSync(absolutePath, 'utf-8') : '';
-            originalContents.set(change.filePath, orig);
+            originalContents.set(cleanPath, orig);
             fs.writeFileSync(absolutePath, change.updatedContent, 'utf-8');
         }
 
         const diffStat = execSync('git diff --shortstat', { encoding: 'utf-8', cwd: worktreePath });
+        if (!diffStat.trim()) {
+            console.warn(`⚠️ No file diffs detected for '${fix.slug}'. Skipping...`);
+            return false;
+        }
         console.log(`Diff summary (${fix.slug}): ${diffStat.trim()}`);
 
         const integrity = validateFixIntegrity(originalContents, changes);
@@ -117,8 +128,7 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
             return false;
         }
 
-        createAndSubmitPR(fix, branchName, worktreePath, modeType);
-        return true;
+        return createAndSubmitPR(fix, branchName, worktreePath, modeType);
     } catch (error) {
         console.error(`❌ Error processing fix '${fix.slug}':`, error);
         throw error;
@@ -146,14 +156,24 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
         const originalContents = new Map<string, string>();
 
         for (const change of changes) {
-            const absolutePath = path.resolve(workDir, change.filePath);
+            const cleanPath = change.filePath.trim().replace(/^\.\//, '').replace(/^\/+/, '');
+            change.filePath = cleanPath;
+            const absolutePath = path.resolve(workDir, cleanPath);
             fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
             const orig = fs.existsSync(absolutePath) ? fs.readFileSync(absolutePath, 'utf-8') : '';
-            originalContents.set(change.filePath, orig);
+            originalContents.set(cleanPath, orig);
             fs.writeFileSync(absolutePath, change.updatedContent, 'utf-8');
         }
 
         const diffStat = execSync('git diff --shortstat', { encoding: 'utf-8', cwd: workDir });
+        if (!diffStat.trim()) {
+            console.warn(`⚠️ No file diffs detected for '${fix.slug}'. Discarding branch...`);
+            try {
+                execFileSync('git', ['checkout', defaultBranch]);
+                execFileSync('git', ['reset', '--hard', defaultBranch]);
+            } catch { /* ignore */ }
+            return false;
+        }
         console.log(`Diff summary: ${diffStat.trim()}`);
 
         const integrity = validateFixIntegrity(originalContents, changes);
@@ -181,8 +201,7 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
             return false;
         }
 
-        createAndSubmitPR(fix, branchName, workDir, modeType);
-        return true;
+        return createAndSubmitPR(fix, branchName, workDir, modeType);
     } catch (error) {
         console.error(`❌ Error processing fix '${fix.slug}':`, error);
         try {

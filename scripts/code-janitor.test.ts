@@ -282,7 +282,7 @@ describe('code-janitor engine test suite', () => {
             }
         });
 
-        it('throws an error when no changes are staged to commit', () => {
+        it('returns false when no changes are staged to commit', () => {
             const mockFix: FixProposal = {
                 filePath: 'dummy.txt',
                 slug: 'dummy-fix',
@@ -294,9 +294,8 @@ describe('code-janitor engine test suite', () => {
             try {
                 const { execFileSync } = require('child_process');
                 execFileSync('git', ['init'], { cwd: tempDir, stdio: 'ignore' });
-                assert.throws(() => {
-                    createAndSubmitPR(mockFix, 'janitor/dummy-branch', tempDir);
-                }, /No staged changes found/);
+                const res = createAndSubmitPR(mockFix, 'janitor/dummy-branch', tempDir);
+                assert.equal(res, false);
             } finally {
                 fs.rmSync(tempDir, { recursive: true, force: true });
             }
