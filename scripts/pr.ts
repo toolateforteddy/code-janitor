@@ -90,22 +90,26 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
         const changes = getProposalChanges(fix);
         const originalContents = new Map<string, string>();
 
+        console.log(`📝 Applying ${changes.length} file change(s) for '${fix.slug}':`);
         for (const change of changes) {
             const cleanPath = change.filePath.trim().replace(/^\.\//, '').replace(/^\/+/, '');
             change.filePath = cleanPath;
             const absolutePath = path.resolve(worktreePath, cleanPath);
             fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
-            const orig = fs.existsSync(absolutePath) ? fs.readFileSync(absolutePath, 'utf-8') : '';
+            const isNew = !fs.existsSync(absolutePath);
+            const orig = isNew ? '' : fs.readFileSync(absolutePath, 'utf-8');
             originalContents.set(cleanPath, orig);
             fs.writeFileSync(absolutePath, change.updatedContent, 'utf-8');
+            const isSame = orig === change.updatedContent;
+            console.log(`   - ${cleanPath} [${isNew ? 'NEW FILE' : 'MODIFIED'}] (${orig.length}b -> ${change.updatedContent.length}b${isSame ? ' ⚠️ UNCHANGED!' : ''})`);
         }
 
-        const diffStat = execSync('git diff --shortstat', { encoding: 'utf-8', cwd: worktreePath });
-        if (!diffStat.trim()) {
-            console.warn(`⚠️ No file diffs detected for '${fix.slug}'. Skipping...`);
+        const statusPorcelain = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf-8', cwd: worktreePath }).trim();
+        if (!statusPorcelain) {
+            console.warn(`⚠️ No file diffs or untracked changes detected for '${fix.slug}'. Skipping...`);
             return false;
         }
-        console.log(`Diff summary (${fix.slug}): ${diffStat.trim()}`);
+        console.log(`Working tree status (${fix.slug}):\n${statusPorcelain.split('\n').map(l => '  ' + l).join('\n')}`);
 
         const integrity = validateFixIntegrity(originalContents, changes);
         let verifResult: ReturnType<typeof runVerification>;
@@ -155,26 +159,30 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
         const changes = getProposalChanges(fix);
         const originalContents = new Map<string, string>();
 
+        console.log(`📝 Applying ${changes.length} file change(s) for '${fix.slug}':`);
         for (const change of changes) {
             const cleanPath = change.filePath.trim().replace(/^\.\//, '').replace(/^\/+/, '');
             change.filePath = cleanPath;
             const absolutePath = path.resolve(workDir, cleanPath);
             fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
-            const orig = fs.existsSync(absolutePath) ? fs.readFileSync(absolutePath, 'utf-8') : '';
+            const isNew = !fs.existsSync(absolutePath);
+            const orig = isNew ? '' : fs.readFileSync(absolutePath, 'utf-8');
             originalContents.set(cleanPath, orig);
             fs.writeFileSync(absolutePath, change.updatedContent, 'utf-8');
+            const isSame = orig === change.updatedContent;
+            console.log(`   - ${cleanPath} [${isNew ? 'NEW FILE' : 'MODIFIED'}] (${orig.length}b -> ${change.updatedContent.length}b${isSame ? ' ⚠️ UNCHANGED!' : ''})`);
         }
 
-        const diffStat = execSync('git diff --shortstat', { encoding: 'utf-8', cwd: workDir });
-        if (!diffStat.trim()) {
-            console.warn(`⚠️ No file diffs detected for '${fix.slug}'. Discarding branch...`);
+        const statusPorcelain = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf-8', cwd: workDir }).trim();
+        if (!statusPorcelain) {
+            console.warn(`⚠️ No file diffs or untracked changes detected for '${fix.slug}'. Discarding branch...`);
             try {
                 execFileSync('git', ['checkout', defaultBranch]);
                 execFileSync('git', ['reset', '--hard', defaultBranch]);
             } catch { /* ignore */ }
             return false;
         }
-        console.log(`Diff summary: ${diffStat.trim()}`);
+        console.log(`Working tree status (${fix.slug}):\n${statusPorcelain.split('\n').map(l => '  ' + l).join('\n')}`);
 
         const integrity = validateFixIntegrity(originalContents, changes);
         let verifResult: ReturnType<typeof runVerification>;

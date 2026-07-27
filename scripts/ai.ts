@@ -34,7 +34,7 @@ export async function generateRepairProposals(buildErrorLogs: string): Promise<F
     5. PRESERVE ALL EXISTING TOP-LEVEL DECLARATIONS: Each file's 'updatedContent' MUST contain the full updated file. Do NOT delete or omit existing top-level functions, composables, classes, or declarations.
     6. PRESERVE API CONTRACTS: If you modify a function signature, update all relevant caller sites across modified files in 'changes'.
     7. NO UNJUSTIFIED SUPPRESSIONS & VALID APIS: Do NOT resolve warnings or errors by adding language suppression annotations (e.g. @Suppress) or deleting callers. Ensure imported standard library functions exist and are valid.
-    8. RESPECT IDIOMATIC TEST PLACEMENT: Only embed in-file tests if the target language natively supports conditional test compilation within source files (e.g., #[cfg(test)] in Rust). In languages where tests belong in separate test files or directories (e.g. Java/Kotlin src/test/, Go *_test.go, JS/TS *.test.ts or __tests__/), put tests in a dedicated test file in 'changes'.
+    8. RESPECT IDIOMATIC TEST PLACEMENT: Follow language-idiomatic conventions for test placement (e.g. in-file conditional modules where supported, or dedicated test files/directories).
     9. NON-TRIVIAL CHANGES REQUIRED: Each file in 'changes' MUST contain actual code additions, deletions, or modifications to resolve the failure. Do NOT output proposals where 'updatedContent' is identical to existing file content.
   `;
 
@@ -57,13 +57,13 @@ export async function generateFixProposals(diff: string): Promise<FixProposal[]>
     RULES:
     1. Each fix MUST be completely self-contained and atomic.
     2. Do NOT propose changes larger than ~${maxLineDiff} total diff lines across all modified files.
-    3. MULTI-FILE PROPOSALS SUPPORTED: Each proposal specifies a 'changes' array containing 1 to 5 file modifications. You can pair a production file refactor with a separate unit test file (e.g., in src/test/, *.test.ts, *_test.go) or update caller sites when modifying a signature.
-    4. ${enableTestGen ? 'Feel free to generate unit tests for uncovered paths using language-idiomatic test patterns in a separate test file in "changes". ONLY embed in-file tests if the target language natively supports conditional test compilation within source files (e.g. #[cfg(test)] in Rust).' : 'Do NOT generate test files or test classes; focus only on code refactoring.'}
+    3. MULTI-FILE PROPOSALS SUPPORTED: Each proposal specifies a 'changes' array containing 1 to 5 file modifications. You can pair a production file refactor with a separate unit test file or update caller sites when modifying a signature.
+    4. ${enableTestGen ? 'Feel free to generate unit tests for uncovered paths using language-idiomatic test patterns.' : 'Do NOT generate test files or test classes; focus only on code refactoring.'}
     5. Focus on idiomatic improvements, resource cleanup, performance, or edge-case bug fixes.
     6. PRESERVE ALL EXISTING TOP-LEVEL DECLARATIONS: 'updatedContent' MUST contain the full updated content for each file. Do NOT delete or omit existing top-level functions, composables, classes, or declarations.
     7. PRESERVE API CONTRACTS: If you modify a function signature, update all relevant call sites across modified files in 'changes'.
     8. NO UNJUSTIFIED SUPPRESSIONS & VALID APIS: Do NOT swallow warnings or delete callers. Verify that all standard library functions and imports exist before using them.
-    9. RESPECT IDIOMATIC TEST PLACEMENT: Follow language conventions for test file structure and placement. Do not pollute production source files with test framework imports or test runner annotations.
+    9. RESPECT IDIOMATIC TEST PLACEMENT: Follow language and project conventions for test structure and placement.
     10. NON-TRIVIAL CHANGES REQUIRED: Every proposed file change MUST include concrete code modifications, additions, or deletions compared to existing code. Do NOT output a proposal if 'updatedContent' is identical to the current code.
   `;
 
