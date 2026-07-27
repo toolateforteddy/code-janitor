@@ -55,14 +55,22 @@ export const fixesResponseSchema = z.object({
 
 export type FixProposal = z.infer<typeof fixProposalSchema>;
 
+export function ensureTrailingNewline(content: string): string {
+    if (!content) return '\n';
+    return content.endsWith('\n') ? content : content + '\n';
+}
+
 export function getProposalChanges(fix: FixProposal): FileChange[] {
+    let changes: FileChange[] = [];
     if (fix.changes && Array.isArray(fix.changes) && fix.changes.length > 0) {
-        return fix.changes;
+        changes = fix.changes;
+    } else if (fix.filePath && fix.updatedContent !== undefined) {
+        changes = [{ filePath: fix.filePath, updatedContent: fix.updatedContent }];
     }
-    if (fix.filePath && fix.updatedContent !== undefined) {
-        return [{ filePath: fix.filePath, updatedContent: fix.updatedContent }];
-    }
-    return [];
+    return changes.map(c => ({
+        ...c,
+        updatedContent: ensureTrailingNewline(c.updatedContent)
+    }));
 }
 
 export function getModel(prov: string, mod: string) {

@@ -16,6 +16,7 @@ import {
     FixProposal,
     fixesResponseSchema,
     getModel,
+    ensureTrailingNewline,
 } from './config.js';
 import { runVerification, logFailedDiff } from './git.js';
 
@@ -95,6 +96,7 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
     7. NO UNJUSTIFIED SUPPRESSIONS & VALID APIS: Do NOT resolve warnings or errors by adding language suppression annotations (e.g. @Suppress) or deleting callers. Ensure imported standard library functions exist and are valid.
     8. RESPECT IDIOMATIC TEST PLACEMENT: Follow language-idiomatic conventions for test placement (e.g. in-file conditional modules where supported, or dedicated test files/directories).
     9. NON-TRIVIAL CHANGES REQUIRED: Each file in 'changes' MUST contain actual code additions, deletions, or modifications to resolve the failure. Do NOT output proposals where 'updatedContent' is identical to existing file content.
+    10. TRAILING NEWLINE MANDATE: 'updatedContent' MUST ALWAYS end with a trailing newline character (\\n).
   `;
 
     let promptText = `Build/Test Error Logs:\n\n${buildErrorLogs.slice(0, 15000)}`;
@@ -132,6 +134,7 @@ export async function generateFixProposals(diff: string, workDir: string = proce
     8. NO UNJUSTIFIED SUPPRESSIONS & VALID APIS: Do NOT swallow warnings or delete callers. Verify that all standard library functions and imports exist before using them.
     9. RESPECT IDIOMATIC TEST PLACEMENT: Follow language and project conventions for test structure and placement.
     10. NON-TRIVIAL CHANGES REQUIRED: Every proposed file change MUST include concrete code modifications, additions, or deletions compared to existing code. Do NOT output a proposal if 'updatedContent' is identical to the current code.
+    11. TRAILING NEWLINE MANDATE: 'updatedContent' MUST ALWAYS end with a trailing newline character (\\n).
   `;
 
     let promptText = `Recent codebase diffs:\n\n${diff.slice(0, 15000)}`;
@@ -176,6 +179,7 @@ export async function attemptAutoFix(
     3. NO UNJUSTIFIED SUPPRESSIONS & VALID APIS: Do NOT swallow warnings, delete caller functions, or use non-existent library imports.
     4. RESPECT IDIOMATIC TEST PLACEMENT: Follow language conventions for test placement. Do not add test framework imports or test runner annotations to production source files.
     5. NON-TRIVIAL AUTO-FIX: When fixing an integrity violation (such as missing top-level declarations), carefully weave the missing original declarations back into your modified file alongside your refactoring logic. Do NOT resolve the issue by reverting the file entirely to its original content (which produces zero diffs and causes PR creation to be skipped).
+    6. TRAILING NEWLINE MANDATE: 'updatedContent' MUST ALWAYS end with a trailing newline character (\\n).
 `;
     try {
         const fileContentsText = currentChanges.map(c => {
@@ -195,6 +199,7 @@ export async function attemptAutoFix(
         console.log(`🤖 Auto-fix proposal: ${retryResponse.object.explanation}`);
         const updatedChanges = retryResponse.object.changes;
         for (const change of updatedChanges) {
+            change.updatedContent = ensureTrailingNewline(change.updatedContent);
             const absolutePath = path.resolve(workDir, change.filePath);
             fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
             fs.writeFileSync(absolutePath, change.updatedContent, 'utf-8');
