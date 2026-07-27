@@ -31,17 +31,31 @@ export function extractFilePathsFromDiff(diff: string): string[] {
     return Array.from(filePaths);
 }
 
-export function extractFilePathsFromLogs(logs: string): string[] {
+export function extractFilePathsFromLogs(logs: string, workDir: string = process.cwd()): string[] {
     const filePaths = new Set<string>();
-    const matches = logs.matchAll(/(?:^|[\s"'(])(\.?\/?(?:src|lib|app|pkg|cmd|tests?)\/[a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9]+)(?::\d+)?/gm);
+    const regex = /(?:^|[\s"'(:]+)([a-zA-Z0-9_\-\.\/\\]+\.(?:rs|kt|java|ts|tsx|js|jsx|go|py|c|cpp|h|hpp|toml|json|yaml|yml|gradle|properties))(?::\d+|(?::\d+)?:\d+|\(\d+(?:,\d+)?\)|[\s"'`\)]|$)/gm;
+    const absWorkDir = path.resolve(workDir).replace(/\\/g, '/');
+
+    const matches = logs.matchAll(regex);
     for (const match of matches) {
-        const filePath = match[1].trim().replace(/^\.\//, '').replace(/^\/+/, '');
-        if (filePath) {
-            filePaths.add(filePath);
+        let candidate = match[1].trim().replace(/\\/g, '/');
+        if (candidate.toLowerCase().startsWith(absWorkDir.toLowerCase())) {
+            candidate = candidate.slice(absWorkDir.length).replace(/^\/+/, '');
+        }
+        candidate = candidate.replace(/^\.\//, '').replace(/^\/+/, '');
+
+        if (candidate.includes('node_modules/') || candidate.includes('.git/') || candidate.startsWith('target/') || candidate.startsWith('build/')) {
+            continue;
+        }
+
+        const resolved = path.resolve(workDir, candidate);
+        if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
+            filePaths.add(candidate);
         }
     }
     return Array.from(filePaths);
 }
+
 
 export function getFullFileContexts(filePaths: string[], workDir: string = process.cwd(), maxBytesPerFile: number = 40000): string {
     const contexts: string[] = [];
@@ -62,7 +76,7 @@ export function getFullFileContexts(filePaths: string[], workDir: string = proce
 }
 
 export async function generateRepairProposals(buildErrorLogs: string, workDir: string = process.cwd()): Promise<FixProposal[]> {
-    const filePaths = extractFilePathsFromLogs(buildErrorLogs);
+    const filePaths = extractFilePathsFromLogs(buildErrorLogs, workDir);
     const fileContexts = getFullFileContexts(filePaths, workDir);
 
     const repairPrompt = `

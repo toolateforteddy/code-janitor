@@ -280,15 +280,26 @@ diff --git a/src/routes/sync.rs b/src/routes/sync.rs
         });
 
         it('extracts file paths accurately from compiler build logs', () => {
-            const mockLogs = `
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-logs-test-'));
+            try {
+                fs.mkdirSync(path.join(tempDir, 'src', 'auth'), { recursive: true });
+                fs.mkdirSync(path.join(tempDir, 'src', 'routes'), { recursive: true });
+                fs.writeFileSync(path.join(tempDir, 'src', 'auth', 'handlers.rs'), '// mock');
+                fs.writeFileSync(path.join(tempDir, 'src', 'routes', 'sync.rs'), '// mock');
+
+                const mockLogs = `
 error[E0425]: cannot find value \`foo\` in this scope
   --> src/auth/handlers.rs:120:5
 error: failed to compile
   --> src/routes/sync.rs:45:12
 `;
-            const paths = extractFilePathsFromLogs(mockLogs);
-            assert.deepEqual(paths, ['src/auth/handlers.rs', 'src/routes/sync.rs']);
+                const paths = extractFilePathsFromLogs(mockLogs, tempDir);
+                assert.deepEqual(paths, ['src/auth/handlers.rs', 'src/routes/sync.rs']);
+            } finally {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            }
         });
+
 
         it('reads full file contexts for valid file paths', () => {
             const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-file-ctx-'));
