@@ -200,6 +200,65 @@ export function updateCursor(newHead: string, stateFilePath: string = STATE_FILE
     }
 }
 
+export function extractTopLevelDeclarations(content: string, _ext: string): string[] {
+    const lines = content.split(/\r?\n/);
+    const declarations: string[] = [];
+
+    for (const line of lines) {
+        if (/^\s+/.test(line)) continue;
+
+        const match = line.match(/^(?:export\s+)?(?:pub\s+)?(?:async\s+)?(?:@\w+(?:\([^)]*\))?\s+)*(?:fun|function|class|interface|object|struct|enum|trait|def|fn)\s+([A-Za-z0-9_]+)/);
+        if (match && match[1]) {
+            declarations.push(match[1]);
+        }
+    }
+    return declarations;
+}
+
+export function validateFixIntegrity(originalContent: string, updatedContent: string, filePath: string): { valid: boolean; reason: string } {
+    if (!originalContent || !originalContent.trim()) {
+        return { valid: true, reason: '' };
+    }
+
+    const normalizedPath = filePath.replace(/\\/g, '/');
+    const isJvmProductionFile = (normalizedPath.includes('/src/main/') || normalizedPath.startsWith('src/main/')) &&
+        /\.(kt|java|scala)$/i.test(normalizedPath);
+    if (isJvmProductionFile) {
+        const testImportRegex = /import\s+(?:org\.junit|org\.testng|junit\.framework|kotlin\.test|org\.scalatest)/i;
+        if (testImportRegex.test(updatedContent) && !testImportRegex.test(originalContent)) {
+            return {
+                valid: false,
+                reason: `Integrity Check Failed: Attempted to add test framework imports into JVM production source file '${filePath}'. Test code in Java/Kotlin must be placed in test source sets (e.g., src/test/).`
+            };
+        }
+    }
+
+    const ext = path.extname(filePath).toLowerCase();
+    const origDeclarations = extractTopLevelDeclarations(originalContent, ext);
+    const updatedDeclarations = new Set(extractTopLevelDeclarations(updatedContent, ext));
+
+    const missingDeclarations = origDeclarations.filter(decl => !updatedDeclarations.has(decl));
+
+    if (missingDeclarations.length > 0) {
+        return {
+            valid: false,
+            reason: `Integrity Check Failed: Fix omitted top-level declaration(s) in ${filePath}: [${missingDeclarations.join(', ')}]. Do not remove existing top-level functions or classes.`
+        };
+    }
+
+    const origLines = originalContent.split(/\r?\n/).length;
+    const updatedLines = updatedContent.split(/\r?\n/).length;
+
+    if (origLines > 25 && updatedLines < origLines * 0.5) {
+        return {
+            valid: false,
+            reason: `Integrity Check Failed: Fix removed ${origLines - updatedLines} lines (${Math.round((1 - updatedLines / origLines) * 100)}% of file in ${filePath}), which exceeds allowable deletion limits.`
+        };
+    }
+
+    return { valid: true, reason: '' };
+}
+
 export async function generateRepairProposals(buildErrorLogs: string): Promise<FixProposal[]> {
     const repairPrompt = `
     You are an expert software engineer and debugger.
@@ -211,6 +270,10 @@ export async function generateRepairProposals(buildErrorLogs: string): Promise<F
     1. Fix ONLY what is necessary to resolve the build or test failures.
     2. Do NOT introduce new features or unnecessary refactoring.
     3. Keep diffs as concise as possible (under ~${maxLineDiff} total diff lines).
+    4. PRESERVE ALL EXISTING TOP-LEVEL DECLARATIONS: 'updatedContent' MUST contain the full updated file. Do NOT delete or omit existing top-level functions, composables, classes, or declarations.
+    5. PRESERVE API CONTRACTS: Do NOT alter or delete function signatures, parameters, or public callbacks unless specifically required to fix the failure.
+    6. NO UNJUSTIFIED SUPPRESSIONS & VALID APIS: Do NOT resolve warnings or errors by adding language suppression annotations (e.g. @Suppress) or deleting callers. Ensure imported standard library functions exist and are valid.
+    7. NO TEST FRAMEWORKS IN JVM PRODUCTION CODE: Never embed unit test classes (@Test) or test framework imports (e.g. org.junit, kotlin.test) into Java/Kotlin production source files under src/main/. (Note: Idiomatic in-file test modules like #[cfg(test)] in Rust are allowed).
   `;
 
     console.log("🔧 Querying model for repair proposals...");
@@ -232,8 +295,12 @@ export async function generateFixProposals(diff: string): Promise<FixProposal[]>
     RULES:
     1. Each fix MUST be completely self-contained and atomic.
     2. Do NOT propose changes larger than ~${maxLineDiff} total diff lines.
-    3. ${enableTestGen ? 'Feel free to generate table-driven unit tests for uncovered paths.' : 'Do NOT generate new test files; focus only on code refactoring.'}
+    3. ${enableTestGen ? 'Feel free to generate unit tests for uncovered paths using language-idiomatic test patterns (e.g., #[cfg(test)] modules in Rust files, or dedicated test directories like src/test/ in Java/Kotlin or *_test.go in Go). NEVER embed test annotations (@Test) or test framework imports (e.g. org.junit) inside Java/Kotlin production files under src/main/.' : 'Do NOT generate test files or test classes; focus only on code refactoring.'}
     4. Focus on idiomatic improvements, resource cleanup, performance, or edge-case bug fixes.
+    5. PRESERVE ALL EXISTING TOP-LEVEL DECLARATIONS: 'updatedContent' MUST contain the full updated file. Do NOT delete or omit existing top-level functions, composables, classes, or declarations.
+    6. PRESERVE API CONTRACTS: Maintain existing signatures and parameters to avoid breaking callers.
+    7. NO UNJUSTIFIED SUPPRESSIONS & VALID APIS: Do NOT swallow warnings or delete callers. Verify that all standard library functions and imports exist before using them.
+    8. NO TEST FRAMEWORKS IN JVM PRODUCTION CODE: Never add unit test classes, test annotations (@Test), or test framework imports (e.g. org.junit, kotlin.test) to Java/Kotlin production source files.
   `;
 
     console.log("🤖 Querying model for refactor proposals...");
@@ -252,25 +319,34 @@ export async function attemptAutoFix(
     failedStep: string,
     failureOutput: string,
     currentContent: string,
-    workDir: string
+    workDir: string,
+    originalContent?: string
 ): Promise<{ success: boolean; updatedContent: string; verifResult: ReturnType<typeof runVerification> }> {
-    console.log(`\n⚠️ Verification failed during ${failedStep}. Attempting auto-fix retry...`);
+    console.log(`\n⚠️ Verification/Integrity failed during ${failedStep}. Attempting auto-fix retry...`);
 
     const retrySchema = z.object({
-        explanation: z.string().describe('Explanation of how the test/lint failure is fixed'),
+        explanation: z.string().describe('Explanation of how the failure or integrity issue is fixed'),
         updatedContent: z.string().describe('Full updated file content'),
     });
 
     const retrySystemPrompt = `
-    You are an expert software engineer fixing a failing test or lint check caused by a recent refactoring attempt.
-    Analyze the failure log output and the target file content, then generate a revised version of the file content that resolves the failures while preserving the core refactoring intent.
+    You are an expert software engineer fixing a failing test, lint check, or file integrity violation caused by a refactoring attempt.
+    Analyze the failure log output, original file content, and target file content, then generate a revised version of the file content that resolves all failures and integrity errors while preserving the core refactoring intent.
+
+    STRICT RULES:
+    1. PRESERVE ALL EXISTING TOP-LEVEL DECLARATIONS: Do NOT delete, truncate, or omit existing top-level functions, composables, or classes from the original file. 'updatedContent' MUST contain the ENTIRE file.
+    2. PRESERVE API CONTRACTS: Keep existing parameter signatures intact.
+    3. NO UNJUSTIFIED SUPPRESSIONS & VALID APIS: Do NOT swallow warnings, delete caller functions, or use non-existent library imports (e.g. invalid kotlin.math imports).
+    4. NO TEST FRAMEWORKS IN JVM PRODUCTION CODE: Never add unit test classes, @Test annotations, or test framework imports to Java/Kotlin production source files (e.g. src/main/).
 `;
     try {
+        const retryPromptText = `Target File: ${fix.filePath}\n\nProposed Fix Title: ${fix.title}\n\nFailure Output (${failedStep}):\n${failureOutput}\n\n${originalContent ? `Original File Content:\n${originalContent}\n\n` : ''}Current File Content:\n${currentContent}`;
+
         const retryResponse = await generateObject({
             model: getModel(provider, modelName),
             schema: retrySchema,
             system: retrySystemPrompt,
-            prompt: `Target File: ${fix.filePath}\n\nProposed Fix Title: ${fix.title}\n\nFailure Output (${failedStep}):\n${failureOutput}\n\nCurrent File Content:\n${currentContent}`,
+            prompt: retryPromptText,
         });
 
         console.log(`🤖 Auto-fix proposal: ${retryResponse.object.explanation}`);
@@ -367,16 +443,25 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
 
         const absolutePath = path.resolve(worktreePath, fix.filePath);
         fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+        const originalContent = fs.existsSync(absolutePath) ? fs.readFileSync(absolutePath, 'utf-8') : '';
         let currentContent = fix.updatedContent;
         fs.writeFileSync(absolutePath, currentContent, 'utf-8');
 
         const diffStat = execSync('git diff --shortstat', { encoding: 'utf-8', cwd: worktreePath });
         console.log(`Diff summary (${fix.slug}): ${diffStat.trim()}`);
 
-        let verifResult = runVerification(lintCmd, testCmd, testTimeoutMs, worktreePath);
+        const integrity = validateFixIntegrity(originalContent, currentContent, fix.filePath);
+        let verifResult: ReturnType<typeof runVerification>;
+
+        if (!integrity.valid) {
+            console.warn(`⚠️ Integrity validation failed for '${fix.slug}': ${integrity.reason}`);
+            verifResult = { success: false, failureOutput: integrity.reason, failedStep: 'integrity' };
+        } else {
+            verifResult = runVerification(lintCmd, testCmd, testTimeoutMs, worktreePath);
+        }
 
         if (!verifResult.success) {
-            const autoFixRes = await attemptAutoFix(fix, verifResult.failedStep, verifResult.failureOutput, currentContent, worktreePath);
+            const autoFixRes = await attemptAutoFix(fix, verifResult.failedStep, verifResult.failureOutput, currentContent, worktreePath, originalContent);
             verifResult = autoFixRes.verifResult;
         }
 
@@ -413,16 +498,25 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
     try {
         const absolutePath = path.resolve(workDir, fix.filePath);
         fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+        const originalContent = fs.existsSync(absolutePath) ? fs.readFileSync(absolutePath, 'utf-8') : '';
         let currentContent = fix.updatedContent;
         fs.writeFileSync(absolutePath, currentContent, 'utf-8');
 
         const diffStat = execSync('git diff --shortstat', { encoding: 'utf-8', cwd: workDir });
         console.log(`Diff summary: ${diffStat.trim()}`);
 
-        let verifResult = runVerification(lintCmd, testCmd, testTimeoutMs, workDir);
+        const integrity = validateFixIntegrity(originalContent, currentContent, fix.filePath);
+        let verifResult: ReturnType<typeof runVerification>;
+
+        if (!integrity.valid) {
+            console.warn(`⚠️ Integrity validation failed for '${fix.slug}': ${integrity.reason}`);
+            verifResult = { success: false, failureOutput: integrity.reason, failedStep: 'integrity' };
+        } else {
+            verifResult = runVerification(lintCmd, testCmd, testTimeoutMs, workDir);
+        }
 
         if (!verifResult.success) {
-            const autoFixRes = await attemptAutoFix(fix, verifResult.failedStep, verifResult.failureOutput, currentContent, workDir);
+            const autoFixRes = await attemptAutoFix(fix, verifResult.failedStep, verifResult.failureOutput, currentContent, workDir, originalContent);
             verifResult = autoFixRes.verifResult;
         }
 
