@@ -281,6 +281,26 @@ describe('code-janitor engine test suite', () => {
                 fs.rmSync(tempDir, { recursive: true, force: true });
             }
         });
+
+        it('throws an error when no changes are staged to commit', () => {
+            const mockFix: FixProposal = {
+                filePath: 'dummy.txt',
+                slug: 'dummy-fix',
+                title: 'Dummy Fix: with multi word message',
+                description: 'A dummy fix description',
+                changes: []
+            };
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-test-nostaged-'));
+            try {
+                const { execFileSync } = require('child_process');
+                execFileSync('git', ['init'], { cwd: tempDir, stdio: 'ignore' });
+                assert.throws(() => {
+                    createAndSubmitPR(mockFix, 'janitor/dummy-branch', tempDir);
+                }, /No staged changes found/);
+            } finally {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            }
+        });
     });
 
     describe('extractTopLevelDeclarations() & validateFixIntegrity()', () => {

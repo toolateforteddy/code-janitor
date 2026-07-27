@@ -27,9 +27,20 @@ export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir:
         execFileSync('git', ['config', 'user.name', 'Code Janitor Bot'], execOpts);
         execFileSync('git', ['config', 'user.email', 'bot@codejanitor.local'], execOpts);
         for (const change of changes) {
-            execFileSync('git', ['add', change.filePath], execOpts);
+            if (change.filePath) {
+                execFileSync('git', ['add', change.filePath.trim()], execOpts);
+            }
         }
-        execFileSync('git', ['commit', '-m', `${prPrefix}: ${fix.title}`], execOpts);
+        execFileSync('git', ['add', '-A'], execOpts);
+
+        const status = execFileSync('git', ['status', '--porcelain'], { cwd: workDir, stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' });
+        if (!status.trim()) {
+            const targetFile = fix.filePath || (changes.length > 0 ? changes.map(c => c.filePath).join(', ') : fix.slug);
+            throw new Error(`No staged changes found in worktree for file: ${targetFile}`);
+        }
+
+        const commitMessage = `${prPrefix}: ${fix.title}`;
+        execFileSync('git', ['commit', '-m', commitMessage], execOpts);
     } catch (err) {
         console.error(`❌ Failed to commit changes for branch '${branchName}':`, err);
         throw new Error(`Failed to commit changes for branch '${branchName}': ${err instanceof Error ? err.message : String(err)}`);
