@@ -12,7 +12,7 @@
 - 🧹 **Non-Blocking Sweeps:** Runs on your schedule (`cron`) or on demand (`workflow_dispatch`) without slowing down daytime PR reviews.
 - ⚡ **Auto-Detected Runtimes & Native Caching:** Automatically detects project ecosystems (Go, Node.js, Rust, Python, Android Kotlin / Gradle), provisions runtimes, and enables native build caching across workflow runs.
 - 🔧 **Automatic Repair Mode:** Runs an initial health check on main. If tests or linters are failing, Janitor automatically switches to **Repair Mode** (`🚨`) to generate minimal fix PRs for the broken build/tests before attempting refactors.
-- 📍 **Persistent History Tracking:** Uses a cached state cursor (`.janitor-state.json`) to track the last analyzed commit hash, ensuring unanalyzed commit windows are never lost across workflow runs.
+- 📍 **Persistent History Tracking & Uncached Fallback:** Uses a cached state cursor (`.janitor-state.json`) to track the last analyzed commit hash across runs. On uncached initial runs (or new repositories), Code Janitor automatically looks back across either the last 24 hours or 10 commits—whichever provides more commits to analyze.
 - 🎯 **Atomic PRs:** Splits refactors and fixes into tiny, single-responsibility PRs (<100 lines) so reviews take 30 seconds.
 - 🛡️ **Zero Broken PR Guarantee:** Runs your native linters and test commands (`go test`, `cargo test`, `npm test`, `pytest`, `./gradlew test`) locally inside the runner. If a change breaks compilation or a test, **it is automatically discarded before a PR is opened**.
 - 💸 **Near-Zero Running Cost ($0–$0.05/mo):** Powered by fast, affordable models like **Gemini 3.6 Flash**. Includes early exit logic if no recent code changes exist.

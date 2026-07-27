@@ -17,6 +17,7 @@ import {
     getDefaultBranch,
     buildPathSpecArgs,
     getGitDiff,
+    getUncachedBaseCommit,
     updateCursor,
     cleanupWorktree,
 } from './git.js';
@@ -161,6 +162,23 @@ describe('code-janitor engine test suite', () => {
         });
     });
 
+    describe('getUncachedBaseCommit()', () => {
+        it('returns empty string when currentHead is empty', () => {
+            const res = getUncachedBaseCommit('');
+            assert.equal(res, '');
+        });
+
+        it('returns a valid commit hash for uncached repository HEAD', () => {
+            const headRes = getGitDiff('');
+            if (headRes.currentHead) {
+                const base = getUncachedBaseCommit(headRes.currentHead);
+                assert.ok(base);
+                assert.equal(typeof base, 'string');
+                assert.ok(base.length >= 7);
+            }
+        });
+    });
+
     describe('updateCursor() and getGitDiff() cursor state handling', () => {
         it('writes cursor state to specified state file path', () => {
             const tempFile = path.join(os.tmpdir(), `janitor-state-test-${Date.now()}.json`);
@@ -200,9 +218,17 @@ describe('code-janitor engine test suite', () => {
 
                 const diffRes = getGitDiff('', tempFile);
                 assert.notEqual(diffRes.baseCommit, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
+                assert.ok(diffRes.baseCommit);
             } finally {
                 if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
             }
+        });
+
+        it('uses uncached base commit determination when state file does not exist', () => {
+            const nonExistentState = path.join(os.tmpdir(), `non-existent-janitor-state-${Date.now()}.json`);
+            const diffRes = getGitDiff('', nonExistentState);
+            assert.ok(diffRes.baseCommit);
+            assert.equal(typeof diffRes.baseCommit, 'string');
         });
     });
 

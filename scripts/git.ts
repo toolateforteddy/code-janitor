@@ -72,10 +72,58 @@ export function buildPathSpecArgs(target: string, excludesStr: string): string {
     return pathSpecArgs;
 }
 
-export function getGitDiff(pathSpecArgs: string, stateFilePath: string = STATE_FILE): { diff: string; currentHead: string; baseCommit: string } {
+export function getUncachedBaseCommit(currentHead: string, cwd?: string): string {
+    if (!currentHead) return '';
+    const execCwd = cwd || process.cwd();
+
+    let count24h = 0;
+    try {
+        const revList24h = execSync('git rev-list --since="24 hours ago" HEAD', {
+            encoding: 'utf-8',
+            stdio: ['pipe', 'pipe', 'pipe'],
+            cwd: execCwd,
+        }).trim();
+        if (revList24h) {
+            count24h = revList24h.split('\n').filter(Boolean).length;
+        }
+    } catch {
+        count24h = 0;
+    }
+
+    const targetCount = Math.max(count24h, 10);
+    console.log(`⏳ Uncached run: last 24h has ${count24h} commit(s). Looking back ${targetCount} commit(s) (24h vs 10 commits max).`);
+
+    try {
+        return execSync(`git rev-parse HEAD~${targetCount}`, {
+            encoding: 'utf-8',
+            stdio: ['pipe', 'pipe', 'pipe'],
+            cwd: execCwd,
+        }).trim();
+    } catch {
+        try {
+            const allCommits = execSync('git rev-list HEAD', {
+                encoding: 'utf-8',
+                stdio: ['pipe', 'pipe', 'pipe'],
+                cwd: execCwd,
+            }).trim().split('\n').filter(Boolean);
+
+            if (allCommits.length > 1) {
+                const rootCommit = allCommits[allCommits.length - 1];
+                console.log(`📍 Repo has ${allCommits.length} total commits (< ${targetCount}). Using root commit: ${rootCommit.slice(0, 7)}`);
+                return rootCommit;
+            } else if (allCommits.length === 1) {
+                return allCommits[0];
+            }
+        } catch {}
+        return currentHead;
+    }
+}
+
+export function getGitDiff(pathSpecArgs: string, stateFilePath: string = STATE_FILE, cwd?: string): { diff: string; currentHead: string; baseCommit: string } {
+    const execCwd = cwd || process.cwd();
     let currentHead = '';
     try {
-        currentHead = execSync('git rev-parse HEAD', { encoding: 'utf-8' }).trim();
+        currentHead = execSync('git rev-parse HEAD', { encoding: 'utf-8', cwd: execCwd }).trim();
     } catch {
         currentHead = '';
     }
@@ -87,21 +135,17 @@ export function getGitDiff(pathSpecArgs: string, stateFilePath: string = STATE_F
             const raw = fs.readFileSync(stateFilePath, 'utf-8');
             const state: JanitorState = JSON.parse(raw);
             if (state.lastAnalyzedCommit) {
-                execSync(`git cat-file -e ${state.lastAnalyzedCommit}`, { stdio: 'ignore' });
+                execSync(`git cat-file -e ${state.lastAnalyzedCommit}`, { stdio: 'ignore', cwd: execCwd });
                 baseCommit = state.lastAnalyzedCommit;
                 console.log(`📍 Found previous cursor at commit: ${baseCommit.slice(0, 7)}`);
             }
         } catch {
-            console.log("⚠️ Stale or invalid state cursor. Falling back to HEAD~1.");
+            console.log("⚠️ Stale or invalid state cursor. Falling back to uncached commit window.");
         }
     }
 
     if (!baseCommit && currentHead) {
-        try {
-            baseCommit = execSync('git rev-parse HEAD~1', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-        } catch {
-            baseCommit = currentHead;
-        }
+        baseCommit = getUncachedBaseCommit(currentHead, execCwd);
     }
 
     if (baseCommit && currentHead && baseCommit === currentHead) {
@@ -111,18 +155,19 @@ export function getGitDiff(pathSpecArgs: string, stateFilePath: string = STATE_F
     try {
         const diffRange = baseCommit && currentHead ? `${baseCommit}..${currentHead}` : 'HEAD~1 HEAD';
         console.log(`🔍 Calculating diff across window: [${diffRange}]`);
-        const diff = execSync(`git diff ${diffRange}${pathSpecArgs}`, { encoding: 'utf-8' });
+        const diff = execSync(`git diff ${diffRange}${pathSpecArgs}`, { encoding: 'utf-8', cwd: execCwd });
         return { diff, currentHead, baseCommit };
     } catch {
         console.warn("Unable to fetch diff using revision range, reading current workspace diff...");
         try {
-            const diff = execSync(`git diff${pathSpecArgs}`, { encoding: 'utf-8' });
+            const diff = execSync(`git diff${pathSpecArgs}`, { encoding: 'utf-8', cwd: execCwd });
             return { diff, currentHead, baseCommit };
         } catch {
             return { diff: '', currentHead, baseCommit };
         }
     }
 }
+
 
 export function updateCursor(newHead: string, stateFilePath: string = STATE_FILE): void {
     if (!newHead) return;
