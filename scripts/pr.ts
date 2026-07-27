@@ -1,4 +1,4 @@
-import { execSync, execFileSync } from 'child_process';
+import { execSync, execFileSync, ExecFileSyncOptions } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import {
@@ -17,7 +17,7 @@ import { validateFixIntegrity } from './integrity.js';
 import { attemptAutoFix } from './ai.js';
 
 export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir: string, modeType: 'repair' | 'refactor' = 'refactor') {
-    const execOpts = { cwd: workDir, stdio: ['pipe', 'pipe', 'pipe'] as const };
+    const execOpts: ExecFileSyncOptions = { cwd: workDir, stdio: ['pipe', 'pipe', 'pipe'] };
     const emoji = modeType === 'repair' ? '🚨' : '🧹';
     const prPrefix = modeType === 'repair' ? 'fix' : 'refactor';
 
