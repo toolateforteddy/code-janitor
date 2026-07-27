@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execFileSync } from 'node:child_process';
 
 import {
     getModel,
@@ -292,7 +293,6 @@ describe('code-janitor engine test suite', () => {
             };
             const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-test-nostaged-'));
             try {
-                const { execFileSync } = require('child_process');
                 execFileSync('git', ['init'], { cwd: tempDir, stdio: 'ignore' });
                 const res = createAndSubmitPR(mockFix, 'janitor/dummy-branch', tempDir);
                 assert.equal(res, false);
