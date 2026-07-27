@@ -28,6 +28,9 @@ import {
 } from './integrity.js';
 import {
     generateRepairProposals,
+    extractFilePathsFromDiff,
+    extractFilePathsFromLogs,
+    getFullFileContexts,
 } from './ai.js';
 import {
     createAndSubmitPR,
@@ -258,9 +261,49 @@ describe('code-janitor engine test suite', () => {
         });
     });
 
-    describe('generateRepairProposals()', () => {
+    describe('generateRepairProposals() & file context extraction', () => {
         it('is defined as an async function', () => {
             assert.equal(typeof generateRepairProposals, 'function');
+        });
+
+        it('extracts file paths accurately from git diff output', () => {
+            const mockDiff = `
+diff --git a/src/auth/handlers.rs b/src/auth/handlers.rs
+index 123456..789012 100644
+--- a/src/auth/handlers.rs
++++ b/src/auth/handlers.rs
+@@ -10,3 +10,3 @@
+diff --git a/src/routes/sync.rs b/src/routes/sync.rs
+`;
+            const paths = extractFilePathsFromDiff(mockDiff);
+            assert.deepEqual(paths, ['src/auth/handlers.rs', 'src/routes/sync.rs']);
+        });
+
+        it('extracts file paths accurately from compiler build logs', () => {
+            const mockLogs = `
+error[E0425]: cannot find value \`foo\` in this scope
+  --> src/auth/handlers.rs:120:5
+error: failed to compile
+  --> src/routes/sync.rs:45:12
+`;
+            const paths = extractFilePathsFromLogs(mockLogs);
+            assert.deepEqual(paths, ['src/auth/handlers.rs', 'src/routes/sync.rs']);
+        });
+
+        it('reads full file contexts for valid file paths', () => {
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-file-ctx-'));
+            try {
+                const subDir = path.join(tempDir, 'src', 'auth');
+                fs.mkdirSync(subDir, { recursive: true });
+                const filePath = path.join(subDir, 'handlers.rs');
+                fs.writeFileSync(filePath, 'fn main() { println!("hello"); }', 'utf-8');
+
+                const contexts = getFullFileContexts(['src/auth/handlers.rs'], tempDir);
+                assert.match(contexts, /--- File: src\/auth\/handlers\.rs \(Full Content\) ---/);
+                assert.match(contexts, /println!\("hello"\)/);
+            } finally {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            }
         });
     });
 

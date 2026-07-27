@@ -19,7 +19,52 @@ import {
 } from './config.js';
 import { runVerification, logFailedDiff } from './git.js';
 
-export async function generateRepairProposals(buildErrorLogs: string): Promise<FixProposal[]> {
+export function extractFilePathsFromDiff(diff: string): string[] {
+    const filePaths = new Set<string>();
+    const matches = diff.matchAll(/^diff --git a\/(.+?) b\/(.+?)$/gm);
+    for (const match of matches) {
+        const filePath = match[2].trim().replace(/^\.\//, '').replace(/^\/+/, '');
+        if (filePath && filePath !== '/dev/null') {
+            filePaths.add(filePath);
+        }
+    }
+    return Array.from(filePaths);
+}
+
+export function extractFilePathsFromLogs(logs: string): string[] {
+    const filePaths = new Set<string>();
+    const matches = logs.matchAll(/(?:^|[\s"'(])(\.?\/?(?:src|lib|app|pkg|cmd|tests?)\/[a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9]+)(?::\d+)?/gm);
+    for (const match of matches) {
+        const filePath = match[1].trim().replace(/^\.\//, '').replace(/^\/+/, '');
+        if (filePath) {
+            filePaths.add(filePath);
+        }
+    }
+    return Array.from(filePaths);
+}
+
+export function getFullFileContexts(filePaths: string[], workDir: string = process.cwd(), maxBytesPerFile: number = 40000): string {
+    const contexts: string[] = [];
+    for (const filePath of filePaths) {
+        const absPath = path.resolve(workDir, filePath);
+        if (fs.existsSync(absPath)) {
+            try {
+                const stat = fs.statSync(absPath);
+                if (stat.isFile()) {
+                    const content = fs.readFileSync(absPath, 'utf-8');
+                    const truncated = content.length > maxBytesPerFile ? content.slice(0, maxBytesPerFile) + '\n... [truncated]' : content;
+                    contexts.push(`--- File: ${filePath} (Full Content) ---\n${truncated}`);
+                }
+            } catch {}
+        }
+    }
+    return contexts.join('\n\n');
+}
+
+export async function generateRepairProposals(buildErrorLogs: string, workDir: string = process.cwd()): Promise<FixProposal[]> {
+    const filePaths = extractFilePathsFromLogs(buildErrorLogs);
+    const fileContexts = getFullFileContexts(filePaths, workDir);
+
     const repairPrompt = `
     You are an expert software engineer and debugger.
     The project build or test suite is currently FAILING on the main branch.
@@ -38,18 +83,26 @@ export async function generateRepairProposals(buildErrorLogs: string): Promise<F
     9. NON-TRIVIAL CHANGES REQUIRED: Each file in 'changes' MUST contain actual code additions, deletions, or modifications to resolve the failure. Do NOT output proposals where 'updatedContent' is identical to existing file content.
   `;
 
+    let promptText = `Build/Test Error Logs:\n\n${buildErrorLogs.slice(0, 15000)}`;
+    if (fileContexts) {
+        promptText += `\n\nFull contents of relevant source files:\n\n${fileContexts}`;
+    }
+
     console.log("🔧 Querying model for repair proposals...");
     const response = await generateObject({
         model: getModel(provider, modelName),
         schema: fixesResponseSchema,
         system: repairPrompt,
-        prompt: `Build/Test Error Logs:\n\n${buildErrorLogs.slice(0, 15000)}`,
+        prompt: promptText,
     });
 
     return response.object.fixes;
 }
 
-export async function generateFixProposals(diff: string): Promise<FixProposal[]> {
+export async function generateFixProposals(diff: string, workDir: string = process.cwd()): Promise<FixProposal[]> {
+    const filePaths = extractFilePathsFromDiff(diff);
+    const fileContexts = getFullFileContexts(filePaths, workDir);
+
     const systemPrompt = `
     You are an expert static analyzer and software maintainer.
     Analyze the recent git diffs and identify up to ${maxPRs} distinct, high-value improvements or edge-case unit tests.
@@ -67,12 +120,17 @@ export async function generateFixProposals(diff: string): Promise<FixProposal[]>
     10. NON-TRIVIAL CHANGES REQUIRED: Every proposed file change MUST include concrete code modifications, additions, or deletions compared to existing code. Do NOT output a proposal if 'updatedContent' is identical to the current code.
   `;
 
+    let promptText = `Recent codebase diffs:\n\n${diff.slice(0, 15000)}`;
+    if (fileContexts) {
+        promptText += `\n\nFull contents of modified files in recent diffs:\n\n${fileContexts}`;
+    }
+
     console.log("🤖 Querying model for refactor proposals...");
     const response = await generateObject({
         model: getModel(provider, modelName),
         schema: fixesResponseSchema,
         system: systemPrompt,
-        prompt: `Recent codebase diffs:\n\n${diff.slice(0, 15000)}`,
+        prompt: promptText,
     });
 
     return response.object.fixes;
