@@ -21,6 +21,7 @@ import {
     createAndSubmitPR,
     extractTopLevelDeclarations,
     validateFixIntegrity,
+    getProposalChanges,
 } from './code-janitor.js';
 
 describe('code-janitor engine test suite', () => {
@@ -302,6 +303,51 @@ fun TopB() { /* modified */ }
             const res = validateFixIntegrity(original, updatedWithJUnit, 'src/main/java/com/example/App.kt');
             assert.equal(res.valid, false);
             assert.match(res.reason, /test framework imports/i);
+        });
+
+        it('validates multi-file changes correctly via Map and Array', () => {
+            const origMap = new Map<string, string>([
+                ['src/main/java/App.kt', 'fun mainApp() {}\n'],
+                ['src/test/java/AppTest.kt', '']
+            ]);
+            const changes = [
+                { filePath: 'src/main/java/App.kt', updatedContent: 'fun mainApp() { println("hello") }\n' },
+                { filePath: 'src/test/java/AppTest.kt', updatedContent: 'import org.junit.Test\nclass AppTest { @Test fun t() {} }\n' }
+            ];
+            const res = validateFixIntegrity(origMap, changes);
+            assert.equal(res.valid, true);
+        });
+    });
+
+    describe('getProposalChanges()', () => {
+        it('returns changes array when present', () => {
+            const fix: FixProposal = {
+                slug: 'test-slug',
+                title: 'Test PR',
+                description: 'Description',
+                changes: [
+                    { filePath: 'src/main.rs', updatedContent: 'fn main() {}' },
+                    { filePath: 'tests/main_test.rs', updatedContent: '#[test] fn test() {}' }
+                ]
+            };
+            const changes = getProposalChanges(fix);
+            assert.equal(changes.length, 2);
+            assert.equal(changes[0].filePath, 'src/main.rs');
+            assert.equal(changes[1].filePath, 'tests/main_test.rs');
+        });
+
+        it('falls back to single filePath and updatedContent for legacy proposals', () => {
+            const fix: FixProposal = {
+                slug: 'legacy-slug',
+                title: 'Legacy PR',
+                description: 'Legacy description',
+                filePath: 'src/lib.rs',
+                updatedContent: 'pub fn lib() {}'
+            };
+            const changes = getProposalChanges(fix);
+            assert.equal(changes.length, 1);
+            assert.equal(changes[0].filePath, 'src/lib.rs');
+            assert.equal(changes[0].updatedContent, 'pub fn lib() {}');
         });
     });
 

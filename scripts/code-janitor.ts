@@ -38,12 +38,20 @@ export interface JanitorState {
 }
 
 // Schema for proposed atomic fixes
-const fixProposalSchema = z.object({
+export const fileChangeSchema = z.object({
+    filePath: z.string().describe('Relative path to the file being created or modified'),
+    updatedContent: z.string().describe('Full new content for the file'),
+});
+
+export type FileChange = z.infer<typeof fileChangeSchema>;
+
+export const fixProposalSchema = z.object({
     slug: z.string().describe('Short url-safe string for git branch, e.g., fix-nil-pointer'),
     title: z.string().describe('Concise PR title'),
-    description: z.string().describe('Explanation of the refactor or added test'),
-    filePath: z.string().describe('Relative path to the target file'),
-    updatedContent: z.string().describe('Full new content for the file'),
+    description: z.string().describe('Explanation of the refactor, added test, or callsite updates'),
+    changes: z.array(fileChangeSchema).min(1).max(5).describe('List of file changes included in this atomic fix (e.g. prod file refactor + separate test file, or function signature change + updated callsites)').optional(),
+    filePath: z.string().optional().describe('Deprecated single file path; prefer "changes" array'),
+    updatedContent: z.string().optional().describe('Deprecated single file updated content; prefer "changes" array'),
 });
 
 const fixesResponseSchema = z.object({
@@ -51,6 +59,16 @@ const fixesResponseSchema = z.object({
 });
 
 export type FixProposal = z.infer<typeof fixProposalSchema>;
+
+export function getProposalChanges(fix: FixProposal): FileChange[] {
+    if (fix.changes && Array.isArray(fix.changes) && fix.changes.length > 0) {
+        return fix.changes;
+    }
+    if (fix.filePath && fix.updatedContent !== undefined) {
+        return [{ filePath: fix.filePath, updatedContent: fix.updatedContent }];
+    }
+    return [];
+}
 
 export function getModel(prov: string, mod: string) {
     switch (prov) {
@@ -215,20 +233,19 @@ export function extractTopLevelDeclarations(content: string, _ext: string): stri
     return declarations;
 }
 
-export function validateFixIntegrity(originalContent: string, updatedContent: string, filePath: string): { valid: boolean; reason: string } {
+export function validateSingleFileIntegrity(originalContent: string, updatedContent: string, filePath: string): { valid: boolean; reason: string } {
     if (!originalContent || !originalContent.trim()) {
         return { valid: true, reason: '' };
     }
 
     const normalizedPath = filePath.replace(/\\/g, '/');
-    const isJvmProductionFile = (normalizedPath.includes('/src/main/') || normalizedPath.startsWith('src/main/')) &&
-        /\.(kt|java|scala)$/i.test(normalizedPath);
-    if (isJvmProductionFile) {
-        const testImportRegex = /import\s+(?:org\.junit|org\.testng|junit\.framework|kotlin\.test|org\.scalatest)/i;
+    const isProductionPath = (normalizedPath.includes('/src/main/') || normalizedPath.startsWith('src/main/'));
+    if (isProductionPath) {
+        const testImportRegex = /import\s+(?:org\.junit|org\.testng|junit\.framework|kotlin\.test|org\.scalatest|@jest\/globals)/i;
         if (testImportRegex.test(updatedContent) && !testImportRegex.test(originalContent)) {
             return {
                 valid: false,
-                reason: `Integrity Check Failed: Attempted to add test framework imports into JVM production source file '${filePath}'. Test code in Java/Kotlin must be placed in test source sets (e.g., src/test/).`
+                reason: `Integrity Check Failed: Attempted to add test framework imports into production source file '${filePath}'. Test code must be placed in appropriate test files or test source sets (e.g., src/test/).`
             };
         }
     }
@@ -259,6 +276,28 @@ export function validateFixIntegrity(originalContent: string, updatedContent: st
     return { valid: true, reason: '' };
 }
 
+export function validateFixIntegrity(
+    originalContentOrMap: string | Map<string, string>,
+    updatedContentOrChanges: string | FileChange[],
+    filePath?: string
+): { valid: boolean; reason: string } {
+    if (typeof originalContentOrMap === 'string' && typeof updatedContentOrChanges === 'string' && filePath) {
+        return validateSingleFileIntegrity(originalContentOrMap, updatedContentOrChanges, filePath);
+    }
+
+    const changes = Array.isArray(updatedContentOrChanges) ? updatedContentOrChanges : [];
+    const origMap = originalContentOrMap instanceof Map ? originalContentOrMap : new Map<string, string>();
+
+    for (const change of changes) {
+        const orig = origMap.get(change.filePath) || '';
+        const res = validateSingleFileIntegrity(orig, change.updatedContent, change.filePath);
+        if (!res.valid) {
+            return res;
+        }
+    }
+    return { valid: true, reason: '' };
+}
+
 export async function generateRepairProposals(buildErrorLogs: string): Promise<FixProposal[]> {
     const repairPrompt = `
     You are an expert software engineer and debugger.
@@ -269,11 +308,12 @@ export async function generateRepairProposals(buildErrorLogs: string): Promise<F
     RULES:
     1. Fix ONLY what is necessary to resolve the build or test failures.
     2. Do NOT introduce new features or unnecessary refactoring.
-    3. Keep diffs as concise as possible (under ~${maxLineDiff} total diff lines).
-    4. PRESERVE ALL EXISTING TOP-LEVEL DECLARATIONS: 'updatedContent' MUST contain the full updated file. Do NOT delete or omit existing top-level functions, composables, classes, or declarations.
-    5. PRESERVE API CONTRACTS: Do NOT alter or delete function signatures, parameters, or public callbacks unless specifically required to fix the failure.
-    6. NO UNJUSTIFIED SUPPRESSIONS & VALID APIS: Do NOT resolve warnings or errors by adding language suppression annotations (e.g. @Suppress) or deleting callers. Ensure imported standard library functions exist and are valid.
-    7. NO TEST FRAMEWORKS IN JVM PRODUCTION CODE: Never embed unit test classes (@Test) or test framework imports (e.g. org.junit, kotlin.test) into Java/Kotlin production source files under src/main/. (Note: Idiomatic in-file test modules like #[cfg(test)] in Rust are allowed).
+    3. Keep diffs as concise as possible (under ~${maxLineDiff} total diff lines across all modified files).
+    4. MULTI-FILE PROPOSALS SUPPORTED: Include all modified files in the 'changes' array. You can modify up to 5 related files in a single proposal (e.g., fixing a function signature and updating callers/test files).
+    5. PRESERVE ALL EXISTING TOP-LEVEL DECLARATIONS: Each file's 'updatedContent' MUST contain the full updated file. Do NOT delete or omit existing top-level functions, composables, classes, or declarations.
+    6. PRESERVE API CONTRACTS: If you modify a function signature, update all relevant caller sites across modified files in 'changes'.
+    7. NO UNJUSTIFIED SUPPRESSIONS & VALID APIS: Do NOT resolve warnings or errors by adding language suppression annotations (e.g. @Suppress) or deleting callers. Ensure imported standard library functions exist and are valid.
+    8. RESPECT IDIOMATIC TEST PLACEMENT: Only embed in-file tests if the target language natively supports conditional test compilation within source files (e.g., #[cfg(test)] in Rust). In languages where tests belong in separate test files or directories (e.g. Java/Kotlin src/test/, Go *_test.go, JS/TS *.test.ts or __tests__/), put tests in a dedicated test file in 'changes'.
   `;
 
     console.log("🔧 Querying model for repair proposals...");
@@ -294,13 +334,14 @@ export async function generateFixProposals(diff: string): Promise<FixProposal[]>
     
     RULES:
     1. Each fix MUST be completely self-contained and atomic.
-    2. Do NOT propose changes larger than ~${maxLineDiff} total diff lines.
-    3. ${enableTestGen ? 'Feel free to generate unit tests for uncovered paths using language-idiomatic test patterns (e.g., #[cfg(test)] modules in Rust files, or dedicated test directories like src/test/ in Java/Kotlin or *_test.go in Go). NEVER embed test annotations (@Test) or test framework imports (e.g. org.junit) inside Java/Kotlin production files under src/main/.' : 'Do NOT generate test files or test classes; focus only on code refactoring.'}
-    4. Focus on idiomatic improvements, resource cleanup, performance, or edge-case bug fixes.
-    5. PRESERVE ALL EXISTING TOP-LEVEL DECLARATIONS: 'updatedContent' MUST contain the full updated file. Do NOT delete or omit existing top-level functions, composables, classes, or declarations.
-    6. PRESERVE API CONTRACTS: Maintain existing signatures and parameters to avoid breaking callers.
-    7. NO UNJUSTIFIED SUPPRESSIONS & VALID APIS: Do NOT swallow warnings or delete callers. Verify that all standard library functions and imports exist before using them.
-    8. NO TEST FRAMEWORKS IN JVM PRODUCTION CODE: Never add unit test classes, test annotations (@Test), or test framework imports (e.g. org.junit, kotlin.test) to Java/Kotlin production source files.
+    2. Do NOT propose changes larger than ~${maxLineDiff} total diff lines across all modified files.
+    3. MULTI-FILE PROPOSALS SUPPORTED: Each proposal specifies a 'changes' array containing 1 to 5 file modifications. You can pair a production file refactor with a separate unit test file (e.g., in src/test/, *.test.ts, *_test.go) or update caller sites when modifying a signature.
+    4. ${enableTestGen ? 'Feel free to generate unit tests for uncovered paths using language-idiomatic test patterns in a separate test file in "changes". ONLY embed in-file tests if the target language natively supports conditional test compilation within source files (e.g. #[cfg(test)] in Rust).' : 'Do NOT generate test files or test classes; focus only on code refactoring.'}
+    5. Focus on idiomatic improvements, resource cleanup, performance, or edge-case bug fixes.
+    6. PRESERVE ALL EXISTING TOP-LEVEL DECLARATIONS: 'updatedContent' MUST contain the full updated content for each file. Do NOT delete or omit existing top-level functions, composables, classes, or declarations.
+    7. PRESERVE API CONTRACTS: If you modify a function signature, update all relevant call sites across modified files in 'changes'.
+    8. NO UNJUSTIFIED SUPPRESSIONS & VALID APIS: Do NOT swallow warnings or delete callers. Verify that all standard library functions and imports exist before using them.
+    9. RESPECT IDIOMATIC TEST PLACEMENT: Follow language conventions for test file structure and placement. Do not pollute production source files with test framework imports or test runner annotations.
   `;
 
     console.log("🤖 Querying model for refactor proposals...");
@@ -318,29 +359,34 @@ export async function attemptAutoFix(
     fix: FixProposal,
     failedStep: string,
     failureOutput: string,
-    currentContent: string,
+    currentChanges: FileChange[],
     workDir: string,
-    originalContent?: string
-): Promise<{ success: boolean; updatedContent: string; verifResult: ReturnType<typeof runVerification> }> {
+    originalContents?: Map<string, string>
+): Promise<{ success: boolean; updatedChanges: FileChange[]; verifResult: ReturnType<typeof runVerification> }> {
     console.log(`\n⚠️ Verification/Integrity failed during ${failedStep}. Attempting auto-fix retry...`);
 
     const retrySchema = z.object({
         explanation: z.string().describe('Explanation of how the failure or integrity issue is fixed'),
-        updatedContent: z.string().describe('Full updated file content'),
+        changes: z.array(fileChangeSchema).min(1).describe('Full updated file contents for all modified files'),
     });
 
     const retrySystemPrompt = `
     You are an expert software engineer fixing a failing test, lint check, or file integrity violation caused by a refactoring attempt.
-    Analyze the failure log output, original file content, and target file content, then generate a revised version of the file content that resolves all failures and integrity errors while preserving the core refactoring intent.
+    Analyze the failure log output, original file contents, and current file contents across all modified files in 'changes', then generate revised versions of the file contents that resolve all failures and integrity errors while preserving the core refactoring intent.
 
     STRICT RULES:
-    1. PRESERVE ALL EXISTING TOP-LEVEL DECLARATIONS: Do NOT delete, truncate, or omit existing top-level functions, composables, or classes from the original file. 'updatedContent' MUST contain the ENTIRE file.
-    2. PRESERVE API CONTRACTS: Keep existing parameter signatures intact.
-    3. NO UNJUSTIFIED SUPPRESSIONS & VALID APIS: Do NOT swallow warnings, delete caller functions, or use non-existent library imports (e.g. invalid kotlin.math imports).
-    4. NO TEST FRAMEWORKS IN JVM PRODUCTION CODE: Never add unit test classes, @Test annotations, or test framework imports to Java/Kotlin production source files (e.g. src/main/).
+    1. PRESERVE ALL EXISTING TOP-LEVEL DECLARATIONS: Do NOT delete, truncate, or omit existing top-level functions, composables, or classes from the original files. 'updatedContent' MUST contain the ENTIRE file for each change.
+    2. PRESERVE API CONTRACTS: Keep existing parameter signatures intact or update callers consistently across modified files.
+    3. NO UNJUSTIFIED SUPPRESSIONS & VALID APIS: Do NOT swallow warnings, delete caller functions, or use non-existent library imports.
+    4. RESPECT IDIOMATIC TEST PLACEMENT: Follow language conventions for test placement. Do not add test framework imports or test runner annotations to production source files.
 `;
     try {
-        const retryPromptText = `Target File: ${fix.filePath}\n\nProposed Fix Title: ${fix.title}\n\nFailure Output (${failedStep}):\n${failureOutput}\n\n${originalContent ? `Original File Content:\n${originalContent}\n\n` : ''}Current File Content:\n${currentContent}`;
+        const fileContentsText = currentChanges.map(c => {
+            const orig = originalContents?.get(c.filePath);
+            return `--- File: ${c.filePath} ---\n${orig ? `Original Content:\n${orig}\n\n` : ''}Current Content:\n${c.updatedContent}`;
+        }).join('\n\n');
+
+        const retryPromptText = `Proposed Fix Title: ${fix.title}\n\nFailure Output (${failedStep}):\n${failureOutput}\n\nModified Files:\n${fileContentsText}`;
 
         const retryResponse = await generateObject({
             model: getModel(provider, modelName),
@@ -350,18 +396,21 @@ export async function attemptAutoFix(
         });
 
         console.log(`🤖 Auto-fix proposal: ${retryResponse.object.explanation}`);
-        const updatedContent = retryResponse.object.updatedContent;
-        const absolutePath = path.resolve(workDir, fix.filePath);
-        fs.writeFileSync(absolutePath, updatedContent, 'utf-8');
+        const updatedChanges = retryResponse.object.changes;
+        for (const change of updatedChanges) {
+            const absolutePath = path.resolve(workDir, change.filePath);
+            fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+            fs.writeFileSync(absolutePath, change.updatedContent, 'utf-8');
+        }
 
         console.log(`Rerunning verification after auto-fix attempt...`);
         const verifResult = runVerification(lintCmd, testCmd, testTimeoutMs, workDir);
-        return { success: verifResult.success, updatedContent, verifResult };
+        return { success: verifResult.success, updatedChanges, verifResult };
     } catch (retryErr) {
         console.error(`Failed during auto-fix generation/execution:`, retryErr);
         return {
             success: false,
-            updatedContent: currentContent,
+            updatedChanges: currentChanges,
             verifResult: { success: false, failureOutput: String(retryErr), failedStep: 'retry' }
         };
     }
@@ -373,9 +422,13 @@ export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir:
     const emoji = modeType === 'repair' ? '🚨' : '🧹';
     const prPrefix = modeType === 'repair' ? 'fix' : 'refactor';
 
+    const changes = getProposalChanges(fix);
+
     execFileSync('git', ['config', 'user.name', 'Code Janitor Bot'], execOpts);
     execFileSync('git', ['config', 'user.email', 'bot@codejanitor.local'], execOpts);
-    execFileSync('git', ['add', fix.filePath], execOpts);
+    for (const change of changes) {
+        execFileSync('git', ['add', change.filePath], execOpts);
+    }
     execFileSync('git', ['commit', '-m', `${prPrefix}: ${fix.title}`], execOpts);
 
     try {
@@ -441,16 +494,21 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
         console.log(`\n--- Processing Fix (Worktree): ${fix.title} ---`);
         execFileSync('git', ['worktree', 'add', '-b', branchName, worktreePath, defaultBranch]);
 
-        const absolutePath = path.resolve(worktreePath, fix.filePath);
-        fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
-        const originalContent = fs.existsSync(absolutePath) ? fs.readFileSync(absolutePath, 'utf-8') : '';
-        let currentContent = fix.updatedContent;
-        fs.writeFileSync(absolutePath, currentContent, 'utf-8');
+        const changes = getProposalChanges(fix);
+        const originalContents = new Map<string, string>();
+
+        for (const change of changes) {
+            const absolutePath = path.resolve(worktreePath, change.filePath);
+            fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+            const orig = fs.existsSync(absolutePath) ? fs.readFileSync(absolutePath, 'utf-8') : '';
+            originalContents.set(change.filePath, orig);
+            fs.writeFileSync(absolutePath, change.updatedContent, 'utf-8');
+        }
 
         const diffStat = execSync('git diff --shortstat', { encoding: 'utf-8', cwd: worktreePath });
         console.log(`Diff summary (${fix.slug}): ${diffStat.trim()}`);
 
-        const integrity = validateFixIntegrity(originalContent, currentContent, fix.filePath);
+        const integrity = validateFixIntegrity(originalContents, changes);
         let verifResult: ReturnType<typeof runVerification>;
 
         if (!integrity.valid) {
@@ -461,7 +519,7 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
         }
 
         if (!verifResult.success) {
-            const autoFixRes = await attemptAutoFix(fix, verifResult.failedStep, verifResult.failureOutput, currentContent, worktreePath, originalContent);
+            const autoFixRes = await attemptAutoFix(fix, verifResult.failedStep, verifResult.failureOutput, changes, worktreePath, originalContents);
             verifResult = autoFixRes.verifResult;
         }
 
@@ -496,16 +554,21 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
     execFileSync('git', ['checkout', '-b', branchName]);
 
     try {
-        const absolutePath = path.resolve(workDir, fix.filePath);
-        fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
-        const originalContent = fs.existsSync(absolutePath) ? fs.readFileSync(absolutePath, 'utf-8') : '';
-        let currentContent = fix.updatedContent;
-        fs.writeFileSync(absolutePath, currentContent, 'utf-8');
+        const changes = getProposalChanges(fix);
+        const originalContents = new Map<string, string>();
+
+        for (const change of changes) {
+            const absolutePath = path.resolve(workDir, change.filePath);
+            fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+            const orig = fs.existsSync(absolutePath) ? fs.readFileSync(absolutePath, 'utf-8') : '';
+            originalContents.set(change.filePath, orig);
+            fs.writeFileSync(absolutePath, change.updatedContent, 'utf-8');
+        }
 
         const diffStat = execSync('git diff --shortstat', { encoding: 'utf-8', cwd: workDir });
         console.log(`Diff summary: ${diffStat.trim()}`);
 
-        const integrity = validateFixIntegrity(originalContent, currentContent, fix.filePath);
+        const integrity = validateFixIntegrity(originalContents, changes);
         let verifResult: ReturnType<typeof runVerification>;
 
         if (!integrity.valid) {
@@ -516,7 +579,7 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
         }
 
         if (!verifResult.success) {
-            const autoFixRes = await attemptAutoFix(fix, verifResult.failedStep, verifResult.failureOutput, currentContent, workDir, originalContent);
+            const autoFixRes = await attemptAutoFix(fix, verifResult.failedStep, verifResult.failureOutput, changes, workDir, originalContents);
             verifResult = autoFixRes.verifResult;
         }
 
