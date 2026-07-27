@@ -6,23 +6,34 @@ import * as os from 'os';
 
 import {
     getModel,
+    STATE_FILE,
+    JanitorState,
+    FixProposal,
+    getProposalChanges,
+} from './config.js';
+import {
     runCmd,
     runVerification,
     getDefaultBranch,
     buildPathSpecArgs,
     getGitDiff,
     updateCursor,
-    STATE_FILE,
-    JanitorState,
-    generateRepairProposals,
     cleanupWorktree,
-    isDirectExecution,
-    FixProposal,
-    createAndSubmitPR,
+} from './git.js';
+import {
     extractTopLevelDeclarations,
     validateFixIntegrity,
-    getProposalChanges,
+} from './integrity.js';
+import {
+    generateRepairProposals,
+} from './ai.js';
+import {
+    createAndSubmitPR,
+} from './pr.js';
+import {
+    isDirectExecution,
 } from './code-janitor.js';
+
 
 describe('code-janitor engine test suite', () => {
 
