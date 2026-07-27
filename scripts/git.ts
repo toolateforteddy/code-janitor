@@ -98,7 +98,7 @@ export function getGitDiff(pathSpecArgs: string, stateFilePath: string = STATE_F
 
     if (!baseCommit && currentHead) {
         try {
-            baseCommit = execSync('git rev-parse HEAD~1', { encoding: 'utf-8' }).trim();
+            baseCommit = execSync('git rev-parse HEAD~1', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
         } catch {
             baseCommit = currentHead;
         }

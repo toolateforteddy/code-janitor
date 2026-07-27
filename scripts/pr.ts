@@ -17,19 +17,25 @@ import { validateFixIntegrity } from './integrity.js';
 import { attemptAutoFix } from './ai.js';
 
 export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir: string, modeType: 'repair' | 'refactor' = 'refactor') {
-    console.log(`Tests passed! Creating commit and PR...`);
-    const execOpts = { cwd: workDir };
+    const execOpts = { cwd: workDir, stdio: ['pipe', 'pipe', 'pipe'] as const };
     const emoji = modeType === 'repair' ? '🚨' : '🧹';
     const prPrefix = modeType === 'repair' ? 'fix' : 'refactor';
 
     const changes = getProposalChanges(fix);
 
-    execFileSync('git', ['config', 'user.name', 'Code Janitor Bot'], execOpts);
-    execFileSync('git', ['config', 'user.email', 'bot@codejanitor.local'], execOpts);
-    for (const change of changes) {
-        execFileSync('git', ['add', change.filePath], execOpts);
+    try {
+        execFileSync('git', ['config', 'user.name', 'Code Janitor Bot'], execOpts);
+        execFileSync('git', ['config', 'user.email', 'bot@codejanitor.local'], execOpts);
+        for (const change of changes) {
+            execFileSync('git', ['add', change.filePath], execOpts);
+        }
+        execFileSync('git', ['commit', '-m', `${prPrefix}: ${fix.title}`], execOpts);
+    } catch (err) {
+        console.error(`❌ Failed to commit changes for branch '${branchName}':`, err);
+        throw new Error(`Failed to commit changes for branch '${branchName}': ${err instanceof Error ? err.message : String(err)}`);
     }
-    execFileSync('git', ['commit', '-m', `${prPrefix}: ${fix.title}`], execOpts);
+
+    console.log(`Creating PR for: ${fix.title}...`);
 
     try {
         execFileSync('git', ['push', 'origin', branchName], execOpts);
