@@ -34,7 +34,7 @@ export interface JanitorState {
 
 // Schema for proposed atomic fixes
 export const fileChangeSchema = z.object({
-    filePath: z.string().describe('Relative path to the file being created or modified'),
+    filePath: z.string().describe('Relative path to the file being created or modified (MUST preserve existing repository directory structure and package folders)'),
     updatedContent: z.string().describe('Full new content for the file'),
 });
 

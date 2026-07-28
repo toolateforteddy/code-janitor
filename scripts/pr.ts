@@ -14,7 +14,7 @@ import {
 } from './config.js';
 import { runVerification, logFailedDiff, cleanupWorktree } from './git.js';
 import { validateFixIntegrity } from './integrity.js';
-import { attemptAutoFix } from './ai.js';
+import { attemptAutoFix, findFileInWorkspaceByBasename } from './ai.js';
 
 export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir: string, modeType: 'repair' | 'refactor' = 'refactor'): boolean {
     const execOpts: ExecFileSyncOptions = { cwd: workDir, stdio: ['pipe', 'pipe', 'pipe'] };
@@ -92,9 +92,20 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
 
         console.log(`📝 Applying ${changes.length} file change(s) for '${fix.slug}':`);
         for (const change of changes) {
-            const cleanPath = change.filePath.trim().replace(/^\.\//, '').replace(/^\/+/, '');
+            let cleanPath = change.filePath.trim().replace(/^\.\//, '').replace(/^\/+/, '');
+            let absolutePath = path.resolve(worktreePath, cleanPath);
+
+            if (!fs.existsSync(absolutePath)) {
+                const baseName = path.basename(cleanPath);
+                const existingRelPath = findFileInWorkspaceByBasename(worktreePath, baseName);
+                if (existingRelPath && existingRelPath !== cleanPath) {
+                    console.log(`   ℹ️ Remapped proposed path '${cleanPath}' to existing canonical path '${existingRelPath}'`);
+                    cleanPath = existingRelPath;
+                    absolutePath = path.resolve(worktreePath, cleanPath);
+                }
+            }
+
             change.filePath = cleanPath;
-            const absolutePath = path.resolve(worktreePath, cleanPath);
             fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
             const isNew = !fs.existsSync(absolutePath);
             const orig = isNew ? '' : fs.readFileSync(absolutePath, 'utf-8');

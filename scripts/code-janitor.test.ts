@@ -34,6 +34,7 @@ import {
     getFullFileContexts,
     collectAgentFiles,
     getAgentFilesContext,
+    findFileInWorkspaceByBasename,
 } from './ai.js';
 import {
     createAndSubmitPR,
@@ -298,6 +299,41 @@ error: failed to compile
 `;
                 const paths = extractFilePathsFromLogs(mockLogs, tempDir);
                 assert.deepEqual(paths, ['src/auth/handlers.rs', 'src/routes/sync.rs']);
+            } finally {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            }
+        });
+
+        it('resolves file paths from logs via workspace basename search when candidate path is partial', () => {
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-fuzzy-logs-'));
+            try {
+                const deepPath = path.join(tempDir, 'apps', 'scribble-box', 'src', 'main', 'java', 'com', 'scribbleroute', 'scribblebox', 'games', 'scribblepuzzle');
+                fs.mkdirSync(deepPath, { recursive: true });
+                fs.writeFileSync(path.join(deepPath, 'ScribblePuzzleViewModel.kt'), '// class ScribblePuzzleViewModel');
+
+                const mockLogs = `
+Unresolved reference: ScribblePuzzleViewModel in ScribblePuzzleViewModel.kt: (12, 34)
+`;
+                const paths = extractFilePathsFromLogs(mockLogs, tempDir);
+                assert.equal(paths.length, 1);
+                assert.equal(paths[0].replace(/\\/g, '/'), 'apps/scribble-box/src/main/java/com/scribbleroute/scribblebox/games/scribblepuzzle/ScribblePuzzleViewModel.kt');
+            } finally {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            }
+        });
+
+        it('finds file in workspace by basename', () => {
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-find-base-'));
+            try {
+                const deepPath = path.join(tempDir, 'pkg', 'sub', 'deep');
+                fs.mkdirSync(deepPath, { recursive: true });
+                fs.writeFileSync(path.join(deepPath, 'TargetFile.kt'), '// content');
+
+                const relPath = findFileInWorkspaceByBasename(tempDir, 'TargetFile.kt');
+                assert.equal(relPath?.replace(/\\/g, '/'), 'pkg/sub/deep/TargetFile.kt');
+
+                const missing = findFileInWorkspaceByBasename(tempDir, 'NonExistent.kt');
+                assert.equal(missing, null);
             } finally {
                 fs.rmSync(tempDir, { recursive: true, force: true });
             }

@@ -32,9 +32,43 @@ export function extractFilePathsFromDiff(diff: string): string[] {
     return Array.from(filePaths);
 }
 
+export function findFileInWorkspaceByBasename(workDir: string, basename: string): string | null {
+    if (!basename || basename === '.' || basename === '..') return null;
+
+    const ignoredDirs = new Set(['node_modules', '.git', 'dist', 'build', 'target', 'vendor', 'generated', '.gradle', '.idea']);
+    const matches: string[] = [];
+
+    const walk = (currentDir: string, relativePrefix: string) => {
+        if (matches.length > 5) return;
+        let entries: fs.Dirent[] = [];
+        try {
+            entries = fs.readdirSync(currentDir, { withFileTypes: true });
+        } catch {
+            return;
+        }
+
+        for (const entry of entries) {
+            const relPath = relativePrefix ? `${relativePrefix}/${entry.name}` : entry.name;
+            const absPath = path.join(currentDir, entry.name);
+
+            if (entry.isDirectory()) {
+                if (ignoredDirs.has(entry.name)) continue;
+                walk(absPath, relPath);
+            } else if (entry.isFile()) {
+                if (entry.name.toLowerCase() === basename.toLowerCase()) {
+                    matches.push(relPath);
+                }
+            }
+        }
+    };
+
+    walk(workDir, '');
+    return matches.length > 0 ? matches[0] : null;
+}
+
 export function extractFilePathsFromLogs(logs: string, workDir: string = process.cwd()): string[] {
     const filePaths = new Set<string>();
-    const regex = /(?:^|[\s"'(:]+)([a-zA-Z0-9_\-\.\/\\]+\.(?:rs|kt|java|ts|tsx|js|jsx|go|py|c|cpp|h|hpp|toml|json|yaml|yml|gradle|properties))(?::\d+|(?::\d+)?:\d+|\(\d+(?:,\d+)?\)|[\s"'`\)]|$)/gm;
+    const regex = /(?:^|[\s"'(:]+)([a-zA-Z0-9_\-\.\/\\]+\.(?:rs|kt|java|ts|tsx|js|jsx|go|py|c|cpp|h|hpp|toml|json|yaml|yml|gradle|properties))(?::\s*\d+|(?::\s*\d+)?:\s*\d+|:\s*\(\s*\d+(?:\s*,\s*\d+)?\)|\(\s*\d+(?:\s*,\s*\d+)?\)|[:\s"'`\)]|$)/gm;
     const absWorkDir = path.resolve(workDir).replace(/\\/g, '/');
 
     const matches = logs.matchAll(regex);
@@ -52,6 +86,12 @@ export function extractFilePathsFromLogs(logs: string, workDir: string = process
         const resolved = path.resolve(workDir, candidate);
         if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
             filePaths.add(candidate);
+        } else {
+            const baseName = path.basename(candidate);
+            const foundRelPath = findFileInWorkspaceByBasename(workDir, baseName);
+            if (foundRelPath) {
+                filePaths.add(foundRelPath);
+            }
         }
     }
     return Array.from(filePaths);
@@ -176,6 +216,7 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
     9. NON-TRIVIAL CHANGES REQUIRED: Each file in 'changes' MUST contain actual code additions, deletions, or modifications to resolve the failure. Do NOT output proposals where 'updatedContent' is identical to existing file content.
     10. TRAILING NEWLINE MANDATE: 'updatedContent' MUST ALWAYS end with a trailing newline character (\\n).
     11. RESPECT AGENT INSTRUCTIONS: Respect any project agent instructions or repository rules provided in AGENTS.md, .agents files, or related agent configurations.
+    12. FILE PATH ACCURACY MANDATE: You MUST preserve the exact file paths, directory structures, and package/module folders of existing files provided in the context or error logs. When modifying an existing file or creating a related test file, match the exact relative folder path and source root conventions of the target codebase. Do NOT invent new package paths or hallucinate directory layouts.
   `;
 
     let promptText = `Build/Test Error Logs:\n\n${buildErrorLogs.slice(0, 15000)}`;
@@ -222,6 +263,7 @@ export async function generateFixProposals(diff: string, workDir: string = proce
     10. NON-TRIVIAL CHANGES REQUIRED: Every proposed file change MUST include concrete code modifications, additions, or deletions compared to existing code. Do NOT output a proposal if 'updatedContent' is identical to the current code.
     11. TRAILING NEWLINE MANDATE: 'updatedContent' MUST ALWAYS end with a trailing newline character (\\n).
     12. RESPECT AGENT INSTRUCTIONS: Respect any project agent instructions or repository rules provided in AGENTS.md, .agents files, or related agent configurations.
+    13. FILE PATH ACCURACY MANDATE: You MUST preserve the exact file paths, directory structures, and package/module folders of existing files provided in the context or error logs. When modifying an existing file or creating a related test file, match the exact relative folder path and source root conventions of the target codebase. Do NOT invent new package paths or hallucinate directory layouts.
   `;
 
     let promptText = `Recent codebase diffs:\n\n${diff.slice(0, 15000)}`;
