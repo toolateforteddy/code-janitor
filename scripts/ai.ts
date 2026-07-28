@@ -58,6 +58,80 @@ export function extractFilePathsFromLogs(logs: string, workDir: string = process
 }
 
 
+export function collectAgentFiles(workDir: string = process.cwd()): string[] {
+    const agentPaths: string[] = [];
+
+    const isIgnoredDir = (dirName: string) => {
+        return ['node_modules', '.git', 'dist', 'build', 'target', 'vendor', 'generated'].includes(dirName);
+    };
+
+    const walk = (currentDir: string, relativePrefix: string) => {
+        let entries: fs.Dirent[] = [];
+        try {
+            entries = fs.readdirSync(currentDir, { withFileTypes: true });
+        } catch {
+            return;
+        }
+
+        for (const entry of entries) {
+            const relPath = relativePrefix ? `${relativePrefix}/${entry.name}` : entry.name;
+            const absPath = path.join(currentDir, entry.name);
+
+            if (entry.isDirectory()) {
+                if (isIgnoredDir(entry.name)) {
+                    continue;
+                }
+                walk(absPath, relPath);
+            } else if (entry.isFile()) {
+                const lowerName = entry.name.toLowerCase();
+                const lowerRel = relPath.toLowerCase();
+
+                const isAgentFile =
+                    lowerName === 'agents.md' ||
+                    relPath === '.agents' ||
+                    lowerRel.startsWith('.agents/') ||
+                    lowerRel.includes('/.agents/') ||
+                    lowerName === 'claude.md' ||
+                    lowerName === 'gemini.md' ||
+                    lowerName === '.cursorrules' ||
+                    lowerRel.startsWith('.cursor/rules/') ||
+                    lowerRel.includes('/.cursor/rules/') ||
+                    lowerRel === '.github/copilot-instructions.md';
+
+                if (isAgentFile) {
+                    agentPaths.push(relPath);
+                }
+            }
+        }
+    };
+
+    walk(workDir, '');
+    return agentPaths;
+}
+
+export function getAgentFilesContext(workDir: string = process.cwd(), maxBytesPerFile: number = 40000): string {
+    const filePaths = collectAgentFiles(workDir);
+    if (filePaths.length === 0) {
+        return '';
+    }
+
+    const contexts: string[] = [];
+    for (const filePath of filePaths) {
+        const absPath = path.resolve(workDir, filePath);
+        if (fs.existsSync(absPath)) {
+            try {
+                const stat = fs.statSync(absPath);
+                if (stat.isFile()) {
+                    const content = fs.readFileSync(absPath, 'utf-8');
+                    const truncated = content.length > maxBytesPerFile ? content.slice(0, maxBytesPerFile) + '\n... [truncated]' : content;
+                    contexts.push(`--- File: ${filePath} (Agent Context) ---\n${truncated}`);
+                }
+            } catch {}
+        }
+    }
+    return contexts.join('\n\n');
+}
+
 export function getFullFileContexts(filePaths: string[], workDir: string = process.cwd(), maxBytesPerFile: number = 40000): string {
     const contexts: string[] = [];
     for (const filePath of filePaths) {
@@ -77,7 +151,11 @@ export function getFullFileContexts(filePaths: string[], workDir: string = proce
 }
 
 export async function generateRepairProposals(buildErrorLogs: string, workDir: string = process.cwd()): Promise<FixProposal[]> {
-    const filePaths = extractFilePathsFromLogs(buildErrorLogs, workDir);
+    const agentContexts = getAgentFilesContext(workDir);
+    const agentFilePaths = new Set(collectAgentFiles(workDir));
+
+    const rawFilePaths = extractFilePathsFromLogs(buildErrorLogs, workDir);
+    const filePaths = rawFilePaths.filter(p => !agentFilePaths.has(p));
     const fileContexts = getFullFileContexts(filePaths, workDir);
 
     const repairPrompt = `
@@ -97,9 +175,13 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
     8. RESPECT IDIOMATIC TEST PLACEMENT: Follow language-idiomatic conventions for test placement (e.g. in-file conditional modules where supported, or dedicated test files/directories).
     9. NON-TRIVIAL CHANGES REQUIRED: Each file in 'changes' MUST contain actual code additions, deletions, or modifications to resolve the failure. Do NOT output proposals where 'updatedContent' is identical to existing file content.
     10. TRAILING NEWLINE MANDATE: 'updatedContent' MUST ALWAYS end with a trailing newline character (\\n).
+    11. RESPECT AGENT INSTRUCTIONS: Respect any project agent instructions or repository rules provided in AGENTS.md, .agents files, or related agent configurations.
   `;
 
     let promptText = `Build/Test Error Logs:\n\n${buildErrorLogs.slice(0, 15000)}`;
+    if (agentContexts) {
+        promptText += `\n\nProject Agent Instructions & Repository Guidelines:\n\n${agentContexts}`;
+    }
     if (fileContexts) {
         promptText += `\n\nFull contents of relevant source files:\n\n${fileContexts}`;
     }
@@ -116,7 +198,11 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
 }
 
 export async function generateFixProposals(diff: string, workDir: string = process.cwd()): Promise<FixProposal[]> {
-    const filePaths = extractFilePathsFromDiff(diff);
+    const agentContexts = getAgentFilesContext(workDir);
+    const agentFilePaths = new Set(collectAgentFiles(workDir));
+
+    const rawFilePaths = extractFilePathsFromDiff(diff);
+    const filePaths = rawFilePaths.filter(p => !agentFilePaths.has(p));
     const fileContexts = getFullFileContexts(filePaths, workDir);
 
     const systemPrompt = `
@@ -135,9 +221,13 @@ export async function generateFixProposals(diff: string, workDir: string = proce
     9. RESPECT IDIOMATIC TEST PLACEMENT: Follow language and project conventions for test structure and placement.
     10. NON-TRIVIAL CHANGES REQUIRED: Every proposed file change MUST include concrete code modifications, additions, or deletions compared to existing code. Do NOT output a proposal if 'updatedContent' is identical to the current code.
     11. TRAILING NEWLINE MANDATE: 'updatedContent' MUST ALWAYS end with a trailing newline character (\\n).
+    12. RESPECT AGENT INSTRUCTIONS: Respect any project agent instructions or repository rules provided in AGENTS.md, .agents files, or related agent configurations.
   `;
 
     let promptText = `Recent codebase diffs:\n\n${diff.slice(0, 15000)}`;
+    if (agentContexts) {
+        promptText += `\n\nProject Agent Instructions & Repository Guidelines:\n\n${agentContexts}`;
+    }
     if (fileContexts) {
         promptText += `\n\nFull contents of modified files in recent diffs:\n\n${fileContexts}`;
     }
@@ -164,6 +254,9 @@ export async function attemptAutoFix(
     console.log(`\n⚠️ Verification/Integrity failed during ${failedStep}. Attempting auto-fix retry...`);
     logFailedDiff(fix, workDir);
 
+    const agentContexts = getAgentFilesContext(workDir);
+    const agentHeader = agentContexts ? `\n\nProject Agent Instructions & Repository Guidelines:\n\n${agentContexts}` : '';
+
     const retrySchema = z.object({
         explanation: z.string().describe('Explanation of how the failure or integrity issue is fixed'),
         changes: z.array(fileChangeSchema).min(1).describe('Full updated file contents for all modified files'),
@@ -180,6 +273,7 @@ export async function attemptAutoFix(
     4. RESPECT IDIOMATIC TEST PLACEMENT: Follow language conventions for test placement. Do not add test framework imports or test runner annotations to production source files.
     5. NON-TRIVIAL AUTO-FIX: When fixing an integrity violation (such as missing top-level declarations), carefully weave the missing original declarations back into your modified file alongside your refactoring logic. Do NOT resolve the issue by reverting the file entirely to its original content (which produces zero diffs and causes PR creation to be skipped).
     6. TRAILING NEWLINE MANDATE: 'updatedContent' MUST ALWAYS end with a trailing newline character (\\n).
+    7. RESPECT AGENT INSTRUCTIONS: Respect any project agent instructions or repository rules provided in AGENTS.md, .agents files, or related agent configurations.
 `;
     try {
         const fileContentsText = currentChanges.map(c => {
@@ -187,7 +281,7 @@ export async function attemptAutoFix(
             return `--- File: ${c.filePath} ---\n${orig ? `Original Content:\n${orig}\n\n` : ''}Current Content:\n${c.updatedContent}`;
         }).join('\n\n');
 
-        const retryPromptText = `Proposed Fix Title: ${fix.title}\n\nFailure Output (${failedStep}):\n${failureOutput}\n\nModified Files:\n${fileContentsText}`;
+        const retryPromptText = `Proposed Fix Title: ${fix.title}\n\nFailure Output (${failedStep}):\n${failureOutput}${agentHeader}\n\nModified Files:\n${fileContentsText}`;
 
         const retryResponse = await generateObject({
             model: getModel(provider, modelName),
@@ -217,4 +311,5 @@ export async function attemptAutoFix(
         };
     }
 }
+
 

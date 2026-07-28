@@ -32,6 +32,8 @@ import {
     extractFilePathsFromDiff,
     extractFilePathsFromLogs,
     getFullFileContexts,
+    collectAgentFiles,
+    getAgentFilesContext,
 } from './ai.js';
 import {
     createAndSubmitPR,
@@ -475,6 +477,60 @@ fun TopB() { /* modified */ }
             assert.equal(changes.length, 1);
             assert.equal(changes[0].filePath, 'src/lib.rs');
             assert.equal(changes[0].updatedContent, 'pub fn lib() {}\n');
+        });
+    });
+
+    describe('collectAgentFiles() & getAgentFilesContext()', () => {
+        it('discovers AGENTS.md and .agents files across repository', () => {
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-agent-files-'));
+            try {
+                fs.writeFileSync(path.join(tempDir, 'AGENTS.md'), '# Root Agent Rules\nFocus on cleanliness.');
+                fs.mkdirSync(path.join(tempDir, '.agents', 'rules'), { recursive: true });
+                fs.writeFileSync(path.join(tempDir, '.agents', 'rules', 'style.md'), 'Prefer explicit types.');
+                fs.mkdirSync(path.join(tempDir, 'src'), { recursive: true });
+                fs.writeFileSync(path.join(tempDir, 'src', 'index.ts'), 'console.log("hello");');
+
+                const collected = collectAgentFiles(tempDir);
+                assert.ok(collected.includes('AGENTS.md'));
+                assert.ok(collected.includes('.agents/rules/style.md'));
+                assert.equal(collected.includes('src/index.ts'), false);
+
+                const context = getAgentFilesContext(tempDir);
+                assert.match(context, /--- File: AGENTS\.md \(Agent Context\) ---/);
+                assert.match(context, /Focus on cleanliness/);
+                assert.match(context, /--- File: \.agents\/rules\/style\.md \(Agent Context\) ---/);
+                assert.match(context, /Prefer explicit types/);
+            } finally {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            }
+        });
+
+        it('discovers CLAUDE.md, GEMINI.md, and .cursorrules files', () => {
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-agent-other-'));
+            try {
+                fs.writeFileSync(path.join(tempDir, 'CLAUDE.md'), '# Claude guide');
+                fs.writeFileSync(path.join(tempDir, '.cursorrules'), 'Cursor instructions');
+
+                const collected = collectAgentFiles(tempDir);
+                assert.ok(collected.includes('CLAUDE.md'));
+                assert.ok(collected.includes('.cursorrules'));
+            } finally {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            }
+        });
+
+        it('returns empty string when no agent files are present', () => {
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-agent-none-'));
+            try {
+                fs.writeFileSync(path.join(tempDir, 'main.ts'), 'export const x = 1;');
+                const collected = collectAgentFiles(tempDir);
+                assert.equal(collected.length, 0);
+
+                const context = getAgentFilesContext(tempDir);
+                assert.equal(context, '');
+            } finally {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            }
         });
     });
 
