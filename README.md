@@ -153,6 +153,8 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 | `reviewers` | Comma-separated GitHub handles or teams to request review | `''` |
 | `draft_pr` | Open PRs in Draft state | `true` |
 | `janitor_mode` | Execution mode (`auto`, `repair-only`, `refactor-only`) | `'auto'` |
+| `enable_llm_tools` | Allow LLM to call workspace tools (`read_file`, `list_directory`, `run_command`) | `true` |
+| `max_llm_tool_steps` | Maximum tool call steps per LLM request | `5` |
 | `go_version` | Go version (e.g. `"1.22"`, `"stable"`). Reads `go.mod` if empty | `''` |
 | `node_version` | Node.js version (e.g. `"18"`, `"20"`, `"22"`, `"24"`). Reads `.nvmrc`, `.node-version`, or `package.json` if empty (fallback `"24"`) | `''` |
 | `python_version` | Python version (e.g. `"3.10"`, `"3.11"`, `"3.12"`). Reads `pyproject.toml` or `.python-version` if empty (fallback `"3.11"`) | `''` |
@@ -161,3 +163,25 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 | `gemini_api_key` | Gemini API key (can also be supplied via `GEMINI_API_KEY` env var) | `''` |
 | `anthropic_api_key` | Anthropic API key (can also be supplied via `ANTHROPIC_API_KEY` env var) | `''` |
 | `openai_api_key` | OpenAI API key (can also be supplied via `OPENAI_API_KEY` env var) | `''` |
+
+---
+
+## 🧰 LLM Workspace Tools & Safety Limits
+
+When `enable_llm_tools` is set to `true` (default), the LLM can dynamically inspect your workspace using Vercel AI SDK function calling before outputting repair or refactor proposals.
+
+### Available Tools
+- `read_file`: Reads the text contents of a workspace file relative to the project root.
+- `list_directory`: Lists directory entries (files and folders) within the workspace, ignoring `.git`, `node_modules`, `dist`, `build`, etc.
+- `run_command`: Executes small, safe, read-only diagnostic commands (`ls`, `dir`, `find`, `git status`, `git log`, `git diff`, `cat`, `grep`, `pwd`, `tree`, `head`, `tail`).
+
+### Tool Logging & Visibility
+All tool invocations are logged directly to standard output during execution (e.g., `🛠️ Tool call: read_file("src/utils.ts") -> Read 1452 chars`), giving full visibility in GitHub Action logs into what data the model accessed.
+
+### Output Size Limits & Guardrails
+To prevent context overflow and control token costs, output size caps are strictly enforced:
+- **File Output Limit (`read_file`):** Truncated at **40,000 characters (~40KB)**.
+- **Command Output Limit (`run_command`):** Truncated at **10,000 characters (~10KB)**.
+- **Directory Entry Limit (`list_directory`):** Truncated at **100 entries**.
+- **Path Traversal Protection:** All file paths are strictly validated (`isPathInsideWorkspace`) to prevent access outside the repository root.
+- **Command Whitelist & Chaining Protection:** Destructive commands (`rm`, `mv`, `git push`, etc.) and shell operators (redirection `>`, command chaining `;`) are blocked.

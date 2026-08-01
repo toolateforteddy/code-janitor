@@ -24,6 +24,8 @@ export const maxLineDiff = parseInt(process.env.MAX_LINE_DIFF || '100', 10);
 export const reviewers = process.env.REVIEWERS || '';
 export const isDraft = process.env.DRAFT_PR === 'true';
 export const maxConcurrency = parseInt(process.env.MAX_CONCURRENCY || '3', 10);
+export const enableLlmTools = process.env.ENABLE_LLM_TOOLS !== 'false';
+export const maxLlmToolSteps = parseInt(process.env.MAX_LLM_TOOL_STEPS || '5', 10);
 
 export const STATE_FILE = '.janitor-state.json';
 

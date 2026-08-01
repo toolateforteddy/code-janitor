@@ -35,7 +35,11 @@ import {
     collectAgentFiles,
     getAgentFilesContext,
     findFileInWorkspaceByBasename,
+    isPathInsideWorkspace,
+    isCommandAllowed,
+    createJanitorTools,
 } from './ai.js';
+
 import {
     createAndSubmitPR,
 } from './pr.js';
@@ -570,6 +574,84 @@ fun TopB() { /* modified */ }
         });
     });
 
+    describe('LLM Tools & Workspace Guardrails', () => {
+        it('validates workspace path boundaries correctly', () => {
+            const workDir = process.cwd();
+            assert.equal(isPathInsideWorkspace(workDir, 'src/main.ts'), true);
+            assert.equal(isPathInsideWorkspace(workDir, './package.json'), true);
+            assert.equal(isPathInsideWorkspace(workDir, '../outside.txt'), false);
+        });
+
+        it('filters allowed vs disallowed shell commands', () => {
+            assert.equal(isCommandAllowed('ls -la'), true);
+            assert.equal(isCommandAllowed('git status'), true);
+            assert.equal(isCommandAllowed('git log -n 5'), true);
+            assert.equal(isCommandAllowed('cat src/index.ts'), true);
+            assert.equal(isCommandAllowed('find . -name "*.ts"'), true);
+
+            assert.equal(isCommandAllowed('rm -rf /'), false);
+            assert.equal(isCommandAllowed('git push origin main'), false);
+            assert.equal(isCommandAllowed('cat src/index.ts > file.txt'), false);
+            assert.equal(isCommandAllowed('ls; rm -rf .'), false);
+        });
+
+        it('executes read_file tool with logging and output truncation', async () => {
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-tool-read-'));
+            try {
+                const samplePath = path.join(tempDir, 'sample.txt');
+                const content = 'a'.repeat(45000);
+                fs.writeFileSync(samplePath, content);
+
+                const tools = createJanitorTools(tempDir);
+                assert.ok(tools && tools.read_file);
+
+                const res = await tools.read_file.execute({ filePath: 'sample.txt' }, { messages: [], toolCallId: '1' });
+                assert.match(res, /\[truncated 5000 characters\. Max file output limit is 40,000 characters\]/);
+
+                const denRes = await tools.read_file.execute({ filePath: '../outside.txt' }, { messages: [], toolCallId: '2' });
+                assert.match(denRes, /Access denied/);
+            } finally {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            }
+        });
+
+        it('executes list_directory tool with entry limits', async () => {
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-tool-dir-'));
+            try {
+                for (let i = 0; i < 110; i++) {
+                    fs.writeFileSync(path.join(tempDir, `file_${i}.txt`), 'test');
+                }
+
+                const tools = createJanitorTools(tempDir);
+                assert.ok(tools && tools.list_directory);
+
+                const res = await tools.list_directory.execute({ dirPath: '.' }, { messages: [], toolCallId: '3' });
+                assert.match(res, /Max directory output limit is 100 entries/);
+            } finally {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            }
+        });
+
+        it('executes run_command tool for allowed commands and rejects disallowed ones', async () => {
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-tool-cmd-'));
+            try {
+                fs.writeFileSync(path.join(tempDir, 'hello.txt'), 'hello world');
+
+                const tools = createJanitorTools(tempDir);
+                assert.ok(tools && tools.run_command);
+
+                const okRes = await tools.run_command.execute({ command: 'git status' }, { messages: [], toolCallId: '4' });
+                assert.ok(typeof okRes === 'string');
+
+                const badRes = await tools.run_command.execute({ command: 'rm -rf .' }, { messages: [], toolCallId: '5' });
+                assert.match(badRes, /Command "rm -rf \." is not allowed/);
+            } finally {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            }
+        });
+    });
+
 });
+
 
 

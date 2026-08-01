@@ -58,6 +58,14 @@ inputs:
     description: 'Execution mode (auto, repair-only, refactor-only)'
     required: false
     default: 'auto'
+  enable_llm_tools:
+    description: 'Allow LLM to call workspace tools (read files, list directories, run safe commands)'
+    required: false
+    default: 'true'
+  max_llm_tool_steps:
+    description: 'Maximum tool call steps per LLM request'
+    required: false
+    default: '5'
   go_version:
     description: 'Go version (e.g. "1.22", "oldstable", "stable"). If empty, reads from go.mod.'
     required: false
@@ -205,6 +213,8 @@ runs:
         REVIEWERS: ${{ inputs.reviewers }}
         DRAFT_PR: ${{ inputs.draft_pr }}
         JANITOR_MODE: ${{ inputs.janitor_mode }}
+        ENABLE_LLM_TOOLS: ${{ inputs.enable_llm_tools }}
+        MAX_LLM_TOOL_STEPS: ${{ inputs.max_llm_tool_steps }}
         GEMINI_API_KEY: ${{ inputs.gemini_api_key || env.GEMINI_API_KEY }}
         ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key || env.ANTHROPIC_API_KEY }}
         OPENAI_API_KEY: ${{ inputs.openai_api_key || env.OPENAI_API_KEY }}

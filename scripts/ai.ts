@@ -1,4 +1,4 @@
-import { generateObject } from 'ai';
+import { generateObject, tool } from 'ai';
 import { z } from 'zod';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -17,8 +17,140 @@ import {
     fixesResponseSchema,
     getModel,
     ensureTrailingNewline,
+    enableLlmTools,
+    maxLlmToolSteps,
 } from './config.js';
-import { runVerification, logFailedDiff } from './git.js';
+import { runVerification, logFailedDiff, runCmd } from './git.js';
+
+export function isPathInsideWorkspace(workDir: string, targetPath: string): boolean {
+    const absWorkDir = path.resolve(workDir);
+    const absTarget = path.resolve(workDir, targetPath);
+    return absTarget.toLowerCase().startsWith(absWorkDir.toLowerCase());
+}
+
+const ALLOWED_COMMAND_PREFIXES = [
+    'ls', 'dir', 'find', 'git status', 'git log', 'git diff', 'cat', 'grep', 'pwd', 'tree', 'file', 'wc', 'head', 'tail'
+];
+
+export function isCommandAllowed(command: string): boolean {
+    const trimmed = command.trim();
+    if (!trimmed) return false;
+    if (/[;&|>`]/.test(trimmed)) {
+        if (trimmed.includes('>') || trimmed.includes(';')) {
+            return false;
+        }
+    }
+    const lower = trimmed.toLowerCase();
+    return ALLOWED_COMMAND_PREFIXES.some(prefix => lower === prefix || lower.startsWith(prefix + ' '));
+}
+
+export function createJanitorTools(workDir: string = process.cwd()) {
+    if (!enableLlmTools) return undefined;
+
+    return {
+        read_file: tool({
+            description: 'Read the contents of a file relative to the project workspace root',
+            parameters: z.object({
+                filePath: z.string().describe('Relative path to the file to read'),
+            }),
+            execute: async ({ filePath }) => {
+                if (!isPathInsideWorkspace(workDir, filePath)) {
+                    console.log(`  🛠️ Tool call: read_file("${filePath}") -> Denied (Outside workspace)`);
+                    return `Error: Access denied. File path "${filePath}" is outside workspace directory.`;
+                }
+                const absPath = path.resolve(workDir, filePath);
+                if (!fs.existsSync(absPath)) {
+                    console.log(`  🛠️ Tool call: read_file("${filePath}") -> Error (File not found)`);
+                    return `Error: File "${filePath}" does not exist.`;
+                }
+                const stat = fs.statSync(absPath);
+                if (!stat.isFile()) {
+                    console.log(`  🛠️ Tool call: read_file("${filePath}") -> Error (Not a file)`);
+                    return `Error: "${filePath}" is not a file.`;
+                }
+                try {
+                    const content = fs.readFileSync(absPath, 'utf-8');
+                    const maxBytes = 40000;
+                    if (content.length > maxBytes) {
+                        const truncated = content.slice(0, maxBytes) + `\n... [truncated ${content.length - maxBytes} characters. Max file output limit is 40,000 characters]`;
+                        console.log(`  🛠️ Tool call: read_file("${filePath}") -> Read ${content.length} chars (Truncated to ${maxBytes})`);
+                        return truncated;
+                    }
+                    console.log(`  🛠️ Tool call: read_file("${filePath}") -> Read ${content.length} chars`);
+                    return content;
+                } catch (err: any) {
+                    console.log(`  🛠️ Tool call: read_file("${filePath}") -> Error (${err.message})`);
+                    return `Error reading file "${filePath}": ${err.message}`;
+                }
+            },
+        }),
+        list_directory: tool({
+            description: 'List files and directories within a workspace folder (defaults to workspace root). Maximum 100 entries.',
+            parameters: z.object({
+                dirPath: z.string().optional().describe('Relative directory path to list (defaults to root ".")'),
+            }),
+            execute: async ({ dirPath }) => {
+                const relativeDir = dirPath || '.';
+                if (!isPathInsideWorkspace(workDir, relativeDir)) {
+                    console.log(`  🛠️ Tool call: list_directory("${relativeDir}") -> Denied (Outside workspace)`);
+                    return `Error: Access denied. Path "${relativeDir}" is outside workspace directory.`;
+                }
+                const absPath = path.resolve(workDir, relativeDir);
+                if (!fs.existsSync(absPath)) {
+                    console.log(`  🛠️ Tool call: list_directory("${relativeDir}") -> Error (Dir not found)`);
+                    return `Error: Directory "${relativeDir}" does not exist.`;
+                }
+                const stat = fs.statSync(absPath);
+                if (!stat.isDirectory()) {
+                    console.log(`  🛠️ Tool call: list_directory("${relativeDir}") -> Error (Not a directory)`);
+                    return `Error: Path "${relativeDir}" is not a directory.`;
+                }
+                try {
+                    const entries = fs.readdirSync(absPath, { withFileTypes: true });
+                    const ignoredDirs = new Set(['node_modules', '.git', 'dist', 'build', 'target', 'vendor']);
+                    const filtered = entries.filter(e => !ignoredDirs.has(e.name));
+                    const maxEntries = 100;
+                    const truncated = filtered.length > maxEntries;
+                    const slice = truncated ? filtered.slice(0, maxEntries) : filtered;
+                    const formatted = slice
+                        .map(e => `${e.isDirectory() ? '[DIR] ' : '[FILE]'} ${e.name}`)
+                        .join('\n');
+                    const finalResult = truncated
+                        ? `${formatted}\n... [truncated ${filtered.length - maxEntries} entries. Max directory output limit is 100 entries]`
+                        : (formatted || '(directory is empty)');
+                    console.log(`  🛠️ Tool call: list_directory("${relativeDir}") -> Returned ${slice.length}${truncated ? ` (Truncated from ${filtered.length})` : ''} entries`);
+                    return finalResult;
+                } catch (err: any) {
+                    console.log(`  🛠️ Tool call: list_directory("${relativeDir}") -> Error (${err.message})`);
+                    return `Error listing directory "${relativeDir}": ${err.message}`;
+                }
+            },
+        }),
+        run_command: tool({
+            description: 'Run small, safe read-only shell commands in the workspace (e.g. ls, dir, find, git status, git log, cat, grep). Output max 10,000 characters.',
+            parameters: z.object({
+                command: z.string().describe('Command string to execute'),
+            }),
+            execute: async ({ command }) => {
+                if (!isCommandAllowed(command)) {
+                    console.log(`  🛠️ Tool call: run_command("${command}") -> Denied (Command not permitted)`);
+                    return `Error: Command "${command}" is not allowed. Only safe read-only diagnostic commands (ls, dir, find, git status, git log, git diff, cat, grep, pwd, tree) are permitted.`;
+                }
+                const result = runCmd(command, 'llm-tool', 10000, workDir);
+                const maxOutput = 10000;
+                let output = result.output;
+                if (output.length > maxOutput) {
+                    output = output.slice(0, maxOutput) + `\n... [output truncated at ${maxOutput} characters limit]`;
+                    console.log(`  🛠️ Tool call: run_command("${command}") -> Executed (Truncated output to ${maxOutput} chars)`);
+                } else {
+                    console.log(`  🛠️ Tool call: run_command("${command}") -> Executed (${output.length} chars output)`);
+                }
+                return output || '(no output)';
+            },
+        }),
+    };
+}
+
 
 export function extractFilePathsFromDiff(diff: string): string[] {
     const filePaths = new Set<string>();
@@ -197,6 +329,7 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
     const rawFilePaths = extractFilePathsFromLogs(buildErrorLogs, workDir);
     const filePaths = rawFilePaths.filter(p => !agentFilePaths.has(p));
     const fileContexts = getFullFileContexts(filePaths, workDir);
+    const tools = createJanitorTools(workDir);
 
     const repairPrompt = `
     You are an expert software engineer and debugger.
@@ -217,6 +350,7 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
     10. TRAILING NEWLINE MANDATE: 'updatedContent' MUST ALWAYS end with a trailing newline character (\\n).
     11. RESPECT AGENT INSTRUCTIONS: Respect any project agent instructions or repository rules provided in AGENTS.md, .agents files, or related agent configurations.
     12. FILE PATH ACCURACY MANDATE: You MUST preserve the exact file paths, directory structures, and package/module folders of existing files provided in the context or error logs. When modifying an existing file or creating a related test file, match the exact relative folder path and source root conventions of the target codebase. Do NOT invent new package paths or hallucinate directory layouts.
+    13. WORKSPACE TOOLS: You have access to interactive workspace tools ('read_file', 'list_directory', 'run_command'). Call available tools if you need to read additional source/test files, inspect workspace structure, or run safe commands.
   `;
 
     let promptText = `Build/Test Error Logs:\n\n${buildErrorLogs.slice(0, 15000)}`;
@@ -233,10 +367,12 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
         schema: fixesResponseSchema,
         system: repairPrompt,
         prompt: promptText,
+        ...(tools ? { tools, maxSteps: maxLlmToolSteps } : {}),
     });
 
     return response.object.fixes;
 }
+
 
 export async function generateFixProposals(diff: string, workDir: string = process.cwd()): Promise<FixProposal[]> {
     const agentContexts = getAgentFilesContext(workDir);
@@ -245,6 +381,7 @@ export async function generateFixProposals(diff: string, workDir: string = proce
     const rawFilePaths = extractFilePathsFromDiff(diff);
     const filePaths = rawFilePaths.filter(p => !agentFilePaths.has(p));
     const fileContexts = getFullFileContexts(filePaths, workDir);
+    const tools = createJanitorTools(workDir);
 
     const systemPrompt = `
     You are an expert static analyzer and software maintainer.
@@ -264,6 +401,7 @@ export async function generateFixProposals(diff: string, workDir: string = proce
     11. TRAILING NEWLINE MANDATE: 'updatedContent' MUST ALWAYS end with a trailing newline character (\\n).
     12. RESPECT AGENT INSTRUCTIONS: Respect any project agent instructions or repository rules provided in AGENTS.md, .agents files, or related agent configurations.
     13. FILE PATH ACCURACY MANDATE: You MUST preserve the exact file paths, directory structures, and package/module folders of existing files provided in the context or error logs. When modifying an existing file or creating a related test file, match the exact relative folder path and source root conventions of the target codebase. Do NOT invent new package paths or hallucinate directory layouts.
+    14. WORKSPACE TOOLS: You have access to interactive workspace tools ('read_file', 'list_directory', 'run_command'). Call available tools if you need to inspect existing test files, helper utilities, or directory layouts.
   `;
 
     let promptText = `Recent codebase diffs:\n\n${diff.slice(0, 15000)}`;
@@ -280,6 +418,7 @@ export async function generateFixProposals(diff: string, workDir: string = proce
         schema: fixesResponseSchema,
         system: systemPrompt,
         prompt: promptText,
+        ...(tools ? { tools, maxSteps: maxLlmToolSteps } : {}),
     });
 
     return response.object.fixes;
@@ -298,6 +437,7 @@ export async function attemptAutoFix(
 
     const agentContexts = getAgentFilesContext(workDir);
     const agentHeader = agentContexts ? `\n\nProject Agent Instructions & Repository Guidelines:\n\n${agentContexts}` : '';
+    const tools = createJanitorTools(workDir);
 
     const retrySchema = z.object({
         explanation: z.string().describe('Explanation of how the failure or integrity issue is fixed'),
@@ -316,6 +456,7 @@ export async function attemptAutoFix(
     5. NON-TRIVIAL AUTO-FIX: When fixing an integrity violation (such as missing top-level declarations), carefully weave the missing original declarations back into your modified file alongside your refactoring logic. Do NOT resolve the issue by reverting the file entirely to its original content (which produces zero diffs and causes PR creation to be skipped).
     6. TRAILING NEWLINE MANDATE: 'updatedContent' MUST ALWAYS end with a trailing newline character (\\n).
     7. RESPECT AGENT INSTRUCTIONS: Respect any project agent instructions or repository rules provided in AGENTS.md, .agents files, or related agent configurations.
+    8. WORKSPACE TOOLS: You have access to interactive workspace tools ('read_file', 'list_directory', 'run_command'). Use them if you need additional workspace context.
 `;
     try {
         const fileContentsText = currentChanges.map(c => {
@@ -330,6 +471,7 @@ export async function attemptAutoFix(
             schema: retrySchema,
             system: retrySystemPrompt,
             prompt: retryPromptText,
+            ...(tools ? { tools, maxSteps: maxLlmToolSteps } : {}),
         });
 
         console.log(`🤖 Auto-fix proposal: ${retryResponse.object.explanation}`);
@@ -353,5 +495,6 @@ export async function attemptAutoFix(
         };
     }
 }
+
 
 
