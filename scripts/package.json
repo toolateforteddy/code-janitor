@@ -5,7 +5,7 @@
     "type": "module",
     "scripts": {
         "start": "tsx code-janitor.ts",
-        "test": "tsx --test code-janitor.test.ts"
+        "test": "tsx --test *.test.ts"
     },
     "dependencies": {
         "@ai-sdk/anthropic": "^1.0.0",
