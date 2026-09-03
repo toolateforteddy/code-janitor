@@ -20,7 +20,16 @@ export const targetPath = process.env.TARGET_PATH || '.';
 export const excludePathsStr = process.env.EXCLUDE_PATHS || '.github/workflows/**, vendor/**, generated/**, dist/**';
 export const enableTestGen = process.env.ENABLE_TEST_GEN === 'true';
 export const maxPRs = parseInt(process.env.MAX_PRS || '3', 10);
-export const maxLineDiff = parseInt(process.env.MAX_LINE_DIFF || '100', 10);
+export function parseLineBudget(raw: string | undefined, fallback: number): number {
+    const parsed = parseInt(raw ?? '', 10);
+    return isNaN(parsed) || parsed <= 0 ? fallback : parsed;
+}
+
+export const maxLineDiff = parseLineBudget(process.env.MAX_LINE_DIFF, 100);
+// Test code is inherently verbose (table cases, fixtures, setup/teardown). Counting it
+// against the production budget pushes the model toward thin tests or dropping them
+// altogether, so tests get their own budget.
+export const maxTestLineDiff = parseLineBudget(process.env.MAX_TEST_LINE_DIFF, 200);
 export const reviewers = process.env.REVIEWERS || '';
 export const isDraft = process.env.DRAFT_PR === 'true';
 export const maxConcurrency = parseInt(process.env.MAX_CONCURRENCY || '3', 10);

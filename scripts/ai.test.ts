@@ -10,6 +10,9 @@ import {
     getFullFileContexts,
     collectAgentFiles,
     getAgentFilesContext,
+    isTestFilePath,
+    findSiblingTestFiles,
+    getSiblingTestContexts,
     findFileInWorkspaceByBasename,
     isPathInsideWorkspace,
     isCommandAllowed,
@@ -104,6 +107,141 @@ Unresolved reference: ScribblePuzzleViewModel in ScribblePuzzleViewModel.kt: (12
                 const contexts = getFullFileContexts(['src/auth/handlers.rs'], tempDir);
                 assert.match(contexts, /--- File: src\/auth\/handlers\.rs \(Full Content\) ---/);
                 assert.match(contexts, /println!\("hello"\)/);
+            } finally {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            }
+        });
+    });
+
+    describe('isTestFilePath(), findSiblingTestFiles() & getSiblingTestContexts()', () => {
+        it('recognizes language-idiomatic test file names', () => {
+            assert.equal(isTestFilePath('scripts/ai.test.ts'), true);
+            assert.equal(isTestFilePath('internal/store/store_test.go'), true);
+            assert.equal(isTestFilePath('app/models/user_spec.rb'), true);
+            assert.equal(isTestFilePath('src/test/java/com/acme/UserServiceTest.kt'), true);
+            assert.equal(isTestFilePath('pkg/utils/test_helpers.py'), true);
+            assert.equal(isTestFilePath('components/Button.spec.tsx'), true);
+            assert.equal(isTestFilePath('scripts/ai.ts'), false);
+            assert.equal(isTestFilePath('internal/store/store.go'), false);
+            assert.equal(isTestFilePath(''), false);
+        });
+
+        it('recognizes source files living inside conventional test directories', () => {
+            assert.equal(isTestFilePath('tests/integration/login.rs'), true);
+            assert.equal(isTestFilePath('src/__tests__/render.tsx'), true);
+            assert.equal(isTestFilePath('tests/fixtures/data.json'), false);
+            assert.equal(isTestFilePath('src/latest/api.ts'), false);
+        });
+
+        it('prefers the counterpart test file, then same-directory siblings', () => {
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-sibling-'));
+            try {
+                const srcDir = path.join(tempDir, 'internal', 'store');
+                fs.mkdirSync(srcDir, { recursive: true });
+                fs.writeFileSync(path.join(srcDir, 'store.go'), 'package store');
+                fs.writeFileSync(path.join(srcDir, 'store_test.go'), 'package store // counterpart');
+                fs.writeFileSync(path.join(srcDir, 'cache_test.go'), 'package store // neighbour');
+
+                const found = findSiblingTestFiles(['internal/store/store.go'], tempDir);
+                assert.deepEqual(found, ['internal/store/store_test.go', 'internal/store/cache_test.go']);
+            } finally {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            }
+        });
+
+        it('ranks counterparts of every changed file ahead of unrelated neighbours', () => {
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-sibling-multi-'));
+            try {
+                const srcDir = path.join(tempDir, 'scripts');
+                fs.mkdirSync(srcDir, { recursive: true });
+                for (const name of ['ai', 'pr', 'config', 'git']) {
+                    fs.writeFileSync(path.join(srcDir, `${name}.ts`), `export const ${name} = 1;`);
+                    fs.writeFileSync(path.join(srcDir, `${name}.test.ts`), `// ${name} suite`);
+                }
+
+                const found = findSiblingTestFiles(['scripts/ai.ts', 'scripts/pr.ts'], tempDir, 2);
+                assert.deepEqual(found.sort(), ['scripts/ai.test.ts', 'scripts/pr.test.ts']);
+            } finally {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            }
+        });
+
+        it('finds tests in mirrored JVM source roots and nested test directories', () => {
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-sibling-jvm-'));
+            try {
+                const mainDir = path.join(tempDir, 'app', 'src', 'main', 'java', 'com', 'acme');
+                const testDir = path.join(tempDir, 'app', 'src', 'test', 'java', 'com', 'acme');
+                fs.mkdirSync(mainDir, { recursive: true });
+                fs.mkdirSync(testDir, { recursive: true });
+                fs.writeFileSync(path.join(mainDir, 'UserService.kt'), 'class UserService');
+                fs.writeFileSync(path.join(testDir, 'UserServiceTest.kt'), 'class UserServiceTest');
+
+                const found = findSiblingTestFiles(['app/src/main/java/com/acme/UserService.kt'], tempDir);
+                assert.deepEqual(found, ['app/src/test/java/com/acme/UserServiceTest.kt']);
+            } finally {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            }
+        });
+
+        it('excludes the changed files themselves and honors the file cap', () => {
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-sibling-cap-'));
+            try {
+                const srcDir = path.join(tempDir, 'src');
+                fs.mkdirSync(srcDir, { recursive: true });
+                fs.writeFileSync(path.join(srcDir, 'index.ts'), 'export const a = 1;');
+                for (const name of ['a', 'b', 'c', 'd']) {
+                    fs.writeFileSync(path.join(srcDir, `${name}.test.ts`), `// ${name}`);
+                }
+
+                const found = findSiblingTestFiles(['src/index.ts', 'src/a.test.ts'], tempDir, 2);
+                assert.equal(found.length, 2);
+                assert.equal(found.includes('src/a.test.ts'), false);
+            } finally {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            }
+        });
+
+        it('falls back to any repository test file when nothing sits near the change', () => {
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-sibling-fallback-'));
+            try {
+                fs.mkdirSync(path.join(tempDir, 'src', 'deep', 'nested'), { recursive: true });
+                fs.mkdirSync(path.join(tempDir, 'other'), { recursive: true });
+                fs.writeFileSync(path.join(tempDir, 'src', 'deep', 'nested', 'thing.ts'), 'export const x = 1;');
+                fs.writeFileSync(path.join(tempDir, 'other', 'legacy.test.ts'), '// legacy suite');
+
+                const found = findSiblingTestFiles(['src/deep/nested/thing.ts'], tempDir);
+                assert.deepEqual(found, ['other/legacy.test.ts']);
+            } finally {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            }
+        });
+
+        it('formats sibling tests as labeled prompt context and returns empty string when none exist', () => {
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-sibling-ctx-'));
+            try {
+                const srcDir = path.join(tempDir, 'scripts');
+                fs.mkdirSync(srcDir, { recursive: true });
+                fs.writeFileSync(path.join(srcDir, 'ai.ts'), 'export const ai = 1;');
+                assert.equal(getSiblingTestContexts(['scripts/ai.ts'], tempDir), '');
+
+                fs.writeFileSync(path.join(srcDir, 'ai.test.ts'), "import { describe } from 'node:test';");
+                const context = getSiblingTestContexts(['scripts/ai.ts'], tempDir);
+                assert.match(context, /--- File: scripts\/ai\.test\.ts \(Existing Test File\) ---/);
+                assert.match(context, /import \{ describe \} from 'node:test';/);
+            } finally {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            }
+        });
+
+        it('truncates oversized sibling test files', () => {
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-sibling-trunc-'));
+            try {
+                fs.writeFileSync(path.join(tempDir, 'index.js'), 'module.exports = {};');
+                fs.writeFileSync(path.join(tempDir, 'index.test.js'), 'x'.repeat(500));
+
+                const context = getSiblingTestContexts(['index.js'], tempDir, 5, 100);
+                assert.match(context, /\.\.\. \[truncated\]/);
+                assert.ok(context.length < 400);
             } finally {
                 fs.rmSync(tempDir, { recursive: true, force: true });
             }

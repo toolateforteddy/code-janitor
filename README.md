@@ -14,6 +14,7 @@
 - 🔧 **Automatic Repair Mode:** Runs an initial health check on main. If tests or linters are failing, Janitor automatically switches to **Repair Mode** (`🚨`) to generate minimal fix PRs for the broken build/tests before attempting refactors.
 - 🔁 **PR Deduplication:** Before proposing anything, Janitor checks the pull requests it has already opened. A repair sweep re-observes the same red `main` every night until the fix is merged, so proposals already covered by an open Janitor PR — or by one a human closed without merging — are skipped instead of re-opened as a fresh PR.
 - 📍 **Persistent History Tracking & Uncached Fallback:** Uses a cached state cursor (`.janitor-state.json`) to track the last analyzed commit hash across runs. On uncached initial runs (or new repositories), Code Janitor automatically looks back across either the last 24 hours or 10 commits—whichever provides more commits to analyze.
+- 🧪 **Convention-Aware Test Generation:** Before writing tests, Janitor feeds the existing sibling test files for each changed source file into the model's context (counterpart tests first, then same-directory tests, mirrored JVM `src/test` roots, and finally any test file in the repo). Generated tests reuse the project's real test framework, imports, and helpers instead of inventing ones that fail to compile.
 - 🎯 **Atomic PRs:** Splits refactors and fixes into tiny, single-responsibility PRs (<100 lines) so reviews take 30 seconds.
 - 🛡️ **Zero Broken PR Guarantee:** Runs your native linters and test commands (`go test`, `cargo test`, `npm test`, `pytest`, `./gradlew test`) locally inside the runner. If a change breaks compilation or a test, **it is automatically discarded before a PR is opened**.
 - 💸 **Near-Zero Running Cost ($0–$0.05/mo):** Powered by fast, affordable models like **Gemini 3.6 Flash**. Includes early exit logic if no recent code changes exist.
@@ -150,7 +151,8 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 | `exclude_paths` | Comma-separated glob patterns to ignore | `'.github/workflows/**, vendor/**, generated/**, dist/**'` |
 | `enable_test_generation` | Whether to write unit tests for uncovered code | `true` |
 | `max_prs_per_run` | Maximum atomic PRs to open in one run | `3` |
-| `max_line_diff` | Hard cap on total diff lines per atomic PR | `100` |
+| `max_line_diff` | Hard cap on total diff lines to non-test files per atomic PR | `100` |
+| `max_test_line_diff` | Hard cap on total diff lines to test files per atomic PR (counted separately from `max_line_diff`) | `200` |
 | `max_concurrency` | Maximum number of fixes to process in parallel (via git worktrees) per run | `3` |
 | `reviewers` | Comma-separated GitHub handles or teams to request review | `''` |
 | `draft_pr` | Open PRs in Draft state | `true` |

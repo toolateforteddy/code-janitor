@@ -11,6 +11,7 @@ import {
     enableTestGen,
     maxPRs,
     maxLineDiff,
+    maxTestLineDiff,
     fileChangeSchema,
     FileChange,
     FixProposal,
@@ -373,6 +374,201 @@ export function getFullFileContexts(filePaths: string[], workDir: string = proce
     return contexts.join('\n\n');
 }
 
+const TEST_BASENAME_PATTERNS: RegExp[] = [
+    /_test\.(go|py|rs|ts|tsx|js|jsx|mjs|cjs|dart)$/i,
+    /^test_.+\.(py|rs)$/i,
+    /\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs)$/i,
+    /(Test|Tests|Spec|Specs)\.(java|kt|kts|cs|scala|swift)$/,
+    /_spec\.rb$/i,
+];
+
+const TEST_DIR_NAMES = new Set(['test', 'tests', '__tests__', 'spec', 'specs', 'testing']);
+
+const SOURCE_EXTENSIONS = new Set([
+    '.go', '.py', '.rs', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
+    '.java', '.kt', '.kts', '.cs', '.scala', '.swift', '.rb', '.dart',
+]);
+
+/**
+ * Recognizes test files across the ecosystems Code Janitor supports, either by
+ * language naming convention (`foo_test.go`, `foo.test.ts`, `FooTest.kt`) or by
+ * living inside a conventional test directory (`tests/`, `__tests__/`, `src/test/`).
+ */
+export function isTestFilePath(filePath: string): boolean {
+    if (!filePath) return false;
+    const normalized = filePath.replace(/\\/g, '/');
+    const basename = path.posix.basename(normalized);
+    if (TEST_BASENAME_PATTERNS.some(pattern => pattern.test(basename))) {
+        return true;
+    }
+    const ext = path.posix.extname(basename).toLowerCase();
+    if (!SOURCE_EXTENSIONS.has(ext)) return false;
+    return normalized
+        .split('/')
+        .slice(0, -1)
+        .some(segment => TEST_DIR_NAMES.has(segment.toLowerCase()));
+}
+
+function listTestFilesInDir(workDir: string, relativeDir: string): string[] {
+    const absDir = path.resolve(workDir, relativeDir);
+    if (!isPathInsideWorkspace(workDir, relativeDir)) return [];
+    let entries: fs.Dirent[] = [];
+    try {
+        entries = fs.readdirSync(absDir, { withFileTypes: true });
+    } catch {
+        return [];
+    }
+    return entries
+        .filter(e => e.isFile())
+        .map(e => (relativeDir === '.' ? e.name : `${relativeDir}/${e.name}`))
+        .filter(rel => isTestFilePath(rel));
+}
+
+/**
+ * Candidate directories that conventionally hold the tests for `sourceDir`:
+ * the directory itself, nested test folders, and JVM-style mirrored source
+ * roots (`src/main/java/... -> src/test/java/...`).
+ */
+function candidateTestDirs(sourceDir: string): string[] {
+    const dirs = new Set<string>();
+    const normalized = sourceDir.replace(/\\/g, '/').replace(/\/+$/, '') || '.';
+    dirs.add(normalized);
+
+    for (const testDirName of ['__tests__', 'tests', 'test', 'spec']) {
+        dirs.add(normalized === '.' ? testDirName : `${normalized}/${testDirName}`);
+    }
+
+    const parent = normalized === '.' ? null : path.posix.dirname(normalized);
+    if (parent && parent !== '.') {
+        for (const testDirName of ['__tests__', 'tests', 'test']) {
+            dirs.add(`${parent}/${testDirName}`);
+        }
+    }
+
+    // JVM / Gradle layouts keep tests in a mirrored source root.
+    if (normalized.includes('/src/main/')) {
+        dirs.add(normalized.replace('/src/main/', '/src/test/'));
+    } else if (normalized.startsWith('src/main/')) {
+        dirs.add(normalized.replace(/^src\/main\//, 'src/test/'));
+    }
+
+    return Array.from(dirs);
+}
+
+/**
+ * Finds existing test files related to the given source files so the model can
+ * copy the project's real test conventions (framework imports, package/module
+ * declarations, shared fixtures and helpers) instead of inventing ones that do
+ * not compile. Counterpart tests for a changed file rank highest, then tests
+ * sitting beside it, then any tests elsewhere in the repo as a last-resort
+ * example of the project's style.
+ */
+export function findSiblingTestFiles(
+    sourcePaths: string[],
+    workDir: string = process.cwd(),
+    maxFiles: number = 5
+): string[] {
+    if (maxFiles <= 0) return [];
+
+    const excluded = new Set(sourcePaths.map(p => p.replace(/\\/g, '/')));
+    const sources = sourcePaths
+        .map(p => p.replace(/\\/g, '/'))
+        .filter(p => !isTestFilePath(p));
+    const stems = sources.map(p => path.posix.basename(p, path.posix.extname(p)).toLowerCase());
+
+    // A test file is the counterpart of a changed source file when its name is
+    // derived from that file's stem: `store.go` -> `store_test.go`,
+    // `ai.ts` -> `ai.test.ts`, `UserService.kt` -> `UserServiceTest.kt`,
+    // `parser.py` -> `test_parser.py`.
+    const isCounterpart = (testPath: string) => {
+        const testStem = path.posix.basename(testPath, path.posix.extname(testPath)).toLowerCase();
+        return stems.some(stem => stem.length > 0 && (testStem.startsWith(stem) || testStem.startsWith(`test_${stem}`)));
+    };
+
+    const counterparts: string[] = [];
+    const neighbours: string[] = [];
+    const seen = new Set<string>();
+
+    const record = (relPath: string) => {
+        const normalized = relPath.replace(/\\/g, '/');
+        if (seen.has(normalized) || excluded.has(normalized)) return;
+        if (!fs.existsSync(path.resolve(workDir, normalized))) return;
+        seen.add(normalized);
+        (isCounterpart(normalized) ? counterparts : neighbours).push(normalized);
+    };
+
+    for (const sourcePath of sources) {
+        const sourceDir = path.posix.dirname(sourcePath);
+        for (const dir of candidateTestDirs(sourceDir)) {
+            for (const testPath of listTestFilesInDir(workDir, dir)) {
+                record(testPath);
+            }
+        }
+    }
+
+    const ordered = [...counterparts, ...neighbours];
+    if (ordered.length >= maxFiles) {
+        return ordered.slice(0, maxFiles);
+    }
+
+    // Nothing nearby: fall back to any test file in the workspace so the model
+    // still sees how this project writes tests.
+    const ignoredDirs = new Set(['node_modules', '.git', 'dist', 'build', 'target', 'vendor', 'generated', '.gradle', '.idea']);
+    const fallback: string[] = [];
+    const walk = (currentDir: string, relativePrefix: string) => {
+        if (ordered.length + fallback.length >= maxFiles) return;
+        let entries: fs.Dirent[] = [];
+        try {
+            entries = fs.readdirSync(currentDir, { withFileTypes: true });
+        } catch {
+            return;
+        }
+        for (const entry of entries) {
+            if (ordered.length + fallback.length >= maxFiles) return;
+            const relPath = relativePrefix ? `${relativePrefix}/${entry.name}` : entry.name;
+            if (entry.isDirectory()) {
+                if (ignoredDirs.has(entry.name)) continue;
+                walk(path.join(currentDir, entry.name), relPath);
+            } else if (entry.isFile() && isTestFilePath(relPath) && !seen.has(relPath) && !excluded.has(relPath)) {
+                seen.add(relPath);
+                fallback.push(relPath);
+            }
+        }
+    };
+    walk(path.resolve(workDir), '');
+
+    return [...ordered, ...fallback].slice(0, maxFiles);
+}
+
+/**
+ * Formats sibling test files as prompt context. Returns '' when the repository
+ * has no discoverable tests for the changed files.
+ */
+export function getSiblingTestContexts(
+    sourcePaths: string[],
+    workDir: string = process.cwd(),
+    maxFiles: number = 5,
+    maxBytesPerFile: number = 20000
+): string {
+    const testPaths = findSiblingTestFiles(sourcePaths, workDir, maxFiles);
+    if (testPaths.length === 0) return '';
+
+    const contexts: string[] = [];
+    for (const testPath of testPaths) {
+        const absPath = path.resolve(workDir, testPath);
+        try {
+            const stat = fs.statSync(absPath);
+            if (!stat.isFile()) continue;
+            const content = fs.readFileSync(absPath, 'utf-8');
+            const truncated = content.length > maxBytesPerFile
+                ? content.slice(0, maxBytesPerFile) + '\n... [truncated]'
+                : content;
+            contexts.push(`--- File: ${testPath} (Existing Test File) ---\n${truncated}`);
+        } catch {}
+    }
+    return contexts.join('\n\n');
+}
+
 export async function generateRepairProposals(buildErrorLogs: string, workDir: string = process.cwd(), existingPRContext: string = ''): Promise<FixProposal[]> {
     const agentContexts = getAgentFilesContext(workDir);
     const agentFilePaths = new Set(collectAgentFiles(workDir));
@@ -380,6 +576,7 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
     const rawFilePaths = extractFilePathsFromLogs(buildErrorLogs, workDir);
     const filePaths = rawFilePaths.filter(p => !agentFilePaths.has(p));
     const fileContexts = getFullFileContexts(filePaths, workDir);
+    const testContexts = getSiblingTestContexts(filePaths, workDir);
     const tools = createJanitorTools(workDir);
 
     const repairPrompt = `
@@ -391,7 +588,7 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
     RULES:
     1. Fix ONLY what is necessary to resolve the build or test failures.
     2. Do NOT introduce new features or unnecessary refactoring.
-    3. Keep diffs as concise as possible (under ~${maxLineDiff} total diff lines across all modified files).
+    3. SEPARATE LINE BUDGETS: Keep changes to non-test (production) files under ~${maxLineDiff} total diff lines. Test file changes have their own separate budget of ~${maxTestLineDiff} total diff lines and do NOT count against the production budget, so never thin out or drop a needed test to stay within the production budget.
     4. MULTI-FILE PROPOSALS SUPPORTED: Include all modified files in the 'changes' array. You can modify up to 5 related files in a single proposal (e.g., fixing a function signature and updating callers/test files).
     5. FULL FILE CONTENT MANDATE (DO NOT TRUNCATE): 'updatedContent' MUST contain the COMPLETE, exact file content from line 1 to the end. NEVER abbreviate, summarize, or omit unedited code with comments like '// ...' or skip existing top-level functions, structs, classes, imports, macros, or types. Omitting top-level declarations causes immediate integrity check failures and invalidates the proposal.
     6. PRESERVE API CONTRACTS: If you modify a function signature, update all relevant caller sites across modified files in 'changes'.
@@ -401,8 +598,9 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
     10. TRAILING NEWLINE MANDATE: 'updatedContent' MUST ALWAYS end with a trailing newline character (\\n).
     11. RESPECT AGENT INSTRUCTIONS: Respect any project agent instructions or repository rules provided in AGENTS.md, .agents files, or related agent configurations.
     12. FILE PATH ACCURACY MANDATE: You MUST preserve the exact file paths, directory structures, and package/module folders of existing files provided in the context or error logs. When modifying an existing file or creating a related test file, match the exact relative folder path and source root conventions of the target codebase. Do NOT invent new package paths or hallucinate directory layouts.
-    13. WORKSPACE TOOLS: You have access to interactive workspace tools ('read_file', 'list_directory', 'run_command'). Call available tools if you need to read additional source/test files, inspect workspace structure, or run safe commands.
-    14. NO DUPLICATE PROPOSALS: If a list of pull requests the janitor has already submitted is provided, do NOT re-propose any fix those PRs already cover. This sweep runs on a schedule and re-observes the same failures until the pending fix is merged; an open PR means the repair is already awaiting review, and a closed unmerged PR means a human rejected that approach. Propose only genuinely new fixes, and return an empty 'fixes' list if every remaining failure is already covered.
+    13. MATCH EXISTING TEST CONVENTIONS: When you add or edit tests, mirror the existing test files provided in the context exactly: same test framework and runner, same import/package/module declarations, same helper and fixture utilities, and the same file naming and directory placement. Do NOT invent test frameworks, helpers, or imports that the existing tests do not already use.
+    14. WORKSPACE TOOLS: You have access to interactive workspace tools ('read_file', 'list_directory', 'run_command'). Call available tools if you need to read additional source/test files, inspect workspace structure, or run safe commands.
+    15. NO DUPLICATE PROPOSALS: If a list of pull requests the janitor has already submitted is provided, do NOT re-propose any fix those PRs already cover. This sweep runs on a schedule and re-observes the same failures until the pending fix is merged; an open PR means the repair is already awaiting review, and a closed unmerged PR means a human rejected that approach. Propose only genuinely new fixes, and return an empty 'fixes' list if every remaining failure is already covered.
   `;
 
     let promptText = `Build/Test Error Logs:\n\n${buildErrorLogs.slice(0, 15000)}`;
@@ -411,6 +609,9 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
     }
     if (fileContexts) {
         promptText += `\n\nFull contents of relevant source files:\n\n${fileContexts}`;
+    }
+    if (testContexts) {
+        promptText += `\n\nExisting test files from this repository (follow these conventions exactly when writing tests):\n\n${testContexts}`;
     }
     if (existingPRContext) {
         promptText += `\n\nPull requests the Code Janitor has ALREADY submitted (do NOT re-propose these fixes):\n\n${existingPRContext}`;
@@ -433,6 +634,7 @@ export async function generateFixProposals(diff: string, workDir: string = proce
     const rawFilePaths = extractFilePathsFromDiff(diff);
     const filePaths = rawFilePaths.filter(p => !agentFilePaths.has(p));
     const fileContexts = getFullFileContexts(filePaths, workDir);
+    const testContexts = enableTestGen ? getSiblingTestContexts(filePaths, workDir) : '';
     const tools = createJanitorTools(workDir);
 
     const systemPrompt = `
@@ -441,7 +643,7 @@ export async function generateFixProposals(diff: string, workDir: string = proce
     
     RULES:
     1. Each fix MUST be completely self-contained and atomic.
-    2. Do NOT propose changes larger than ~${maxLineDiff} total diff lines across all modified files.
+    2. SEPARATE LINE BUDGETS: Do NOT propose changes to non-test (production) files larger than ~${maxLineDiff} total diff lines. Test files (e.g. '*_test.go', '*.test.ts', 'src/test/**', 'tests/**', or whatever this project uses) have their own separate budget of ~${maxTestLineDiff} total diff lines and do NOT count against the production budget, so never thin out or drop a needed test to stay within the production budget.
     3. MULTI-FILE PROPOSALS SUPPORTED: Each proposal specifies a 'changes' array containing 1 to 5 file modifications. You can pair a production file refactor with a separate unit test file or update caller sites when modifying a signature.
     4. ${enableTestGen ? 'Feel free to generate unit tests for uncovered paths using language-idiomatic test patterns.' : 'Do NOT generate test files or test classes; focus only on code refactoring.'}
     5. Focus on idiomatic improvements, resource cleanup, performance, or edge-case bug fixes. DO NOT propose redundant refactorings for logic or validation that already exists in the file.
@@ -453,8 +655,9 @@ export async function generateFixProposals(diff: string, workDir: string = proce
     11. TRAILING NEWLINE MANDATE: 'updatedContent' MUST ALWAYS end with a trailing newline character (\\n).
     12. RESPECT AGENT INSTRUCTIONS: Respect any project agent instructions or repository rules provided in AGENTS.md, .agents files, or related agent configurations.
     13. FILE PATH ACCURACY MANDATE: You MUST preserve the exact file paths, directory structures, and package/module folders of existing files provided in the context or error logs. When modifying an existing file or creating a related test file, match the exact relative folder path and source root conventions of the target codebase. Do NOT invent new package paths or hallucinate directory layouts.
-    14. WORKSPACE TOOLS: You have access to interactive workspace tools ('read_file', 'list_directory', 'run_command'). Call available tools if you need to inspect existing test files, helper utilities, or directory layouts.
-    15. NO DUPLICATE PROPOSALS: If a list of pull requests the janitor has already submitted is provided, do NOT re-propose any improvement those PRs already cover. An open PR means that change is already awaiting review; a closed unmerged PR means a human rejected that approach.
+    14. MATCH EXISTING TEST CONVENTIONS: When you add or edit tests, mirror the existing test files provided in the context exactly: same test framework and runner, same import/package/module declarations, same helper and fixture utilities, and the same file naming and directory placement. Do NOT invent test frameworks, helpers, or imports that the existing tests do not already use.
+    15. WORKSPACE TOOLS: You have access to interactive workspace tools ('read_file', 'list_directory', 'run_command'). Call available tools if you need to inspect existing test files, helper utilities, or directory layouts.
+    16. NO DUPLICATE PROPOSALS: If a list of pull requests the janitor has already submitted is provided, do NOT re-propose any improvement those PRs already cover. An open PR means that change is already awaiting review; a closed unmerged PR means a human rejected that approach.
   `;
 
     let promptText = `Recent codebase diffs:\n\n${diff.slice(0, 15000)}`;
@@ -463,6 +666,9 @@ export async function generateFixProposals(diff: string, workDir: string = proce
     }
     if (fileContexts) {
         promptText += `\n\nFull contents of modified files in recent diffs:\n\n${fileContexts}`;
+    }
+    if (testContexts) {
+        promptText += `\n\nExisting test files from this repository (follow these conventions exactly when writing tests):\n\n${testContexts}`;
     }
     if (existingPRContext) {
         promptText += `\n\nPull requests the Code Janitor has ALREADY submitted (do NOT re-propose these changes):\n\n${existingPRContext}`;
@@ -490,6 +696,10 @@ export async function attemptAutoFix(
 
     const agentContexts = getAgentFilesContext(workDir);
     const agentHeader = agentContexts ? `\n\nProject Agent Instructions & Repository Guidelines:\n\n${agentContexts}` : '';
+    const testContexts = getSiblingTestContexts(currentChanges.map(c => c.filePath), workDir);
+    const testHeader = testContexts
+        ? `\n\nExisting test files from this repository (follow these conventions exactly when writing tests):\n\n${testContexts}`
+        : '';
     const tools = createJanitorTools(workDir);
 
     const retrySchema = z.object({
@@ -509,7 +719,8 @@ export async function attemptAutoFix(
     5. NON-TRIVIAL AUTO-FIX: When fixing an integrity violation (such as missing top-level declarations), carefully weave the missing original declarations back into your modified file alongside your refactoring logic. Do NOT resolve the issue by reverting the file entirely to its original content (which produces zero diffs and causes PR creation to be skipped).
     6. TRAILING NEWLINE MANDATE: 'updatedContent' MUST ALWAYS end with a trailing newline character (\\n).
     7. RESPECT AGENT INSTRUCTIONS: Respect any project agent instructions or repository rules provided in AGENTS.md, .agents files, or related agent configurations.
-    8. WORKSPACE TOOLS: You have access to interactive workspace tools ('read_file', 'list_directory', 'run_command'). Use them if you need additional workspace context.
+    8. MATCH EXISTING TEST CONVENTIONS: When the failure is in a test file, mirror the existing test files provided in the context exactly: same test framework and runner, same import/package/module declarations, and the same helper and fixture utilities. Compilation failures in tests are usually caused by imports, helpers, or assertion APIs that do not exist in this project.
+    9. WORKSPACE TOOLS: You have access to interactive workspace tools ('read_file', 'list_directory', 'run_command'). Use them if you need additional workspace context.
 `;
     try {
         const fileContentsText = currentChanges.map(c => {
@@ -517,7 +728,7 @@ export async function attemptAutoFix(
             return `--- File: ${c.filePath} ---\n${orig ? `Original Content:\n${orig}\n\n` : ''}Current Content:\n${c.updatedContent}`;
         }).join('\n\n');
 
-        const retryPromptText = `Proposed Fix Title: ${fix.title}\n\nFailure Output (${failedStep}):\n${failureOutput}${agentHeader}\n\nModified Files:\n${fileContentsText}`;
+        const retryPromptText = `Proposed Fix Title: ${fix.title}\n\nFailure Output (${failedStep}):\n${failureOutput}${agentHeader}${testHeader}\n\nModified Files:\n${fileContentsText}`;
 
         const retryResult = await generateStructuredWithTools(retrySchema, retrySystemPrompt, retryPromptText, tools);
 
