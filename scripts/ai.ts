@@ -20,8 +20,26 @@ import {
     ensureTrailingNewline,
     enableLlmTools,
     maxLlmToolSteps,
+    preferEdits,
+    isEditBasedChange,
 } from './config.js';
+import { applyEdits } from './edits.js';
 import { runVerification, logFailedDiff, runCmd } from './git.js';
+
+const EDIT_FORMAT_RULE = `CHANGE FORMAT (PREFER TARGETED EDITS): For an EXISTING file, express the change as an 'edits' array of search/replace pairs: 'oldText' is a snippet copied VERBATIM from the current file content (exact indentation, enough surrounding lines to be unique in that file) and 'newText' is what replaces it. Use an empty 'newText' to delete the snippet, and set 'replaceAll' only when every occurrence should change. Do NOT echo the whole file back. For a NEW file, omit 'edits' and put the complete file body in 'updatedContent'. If you do fall back to 'updatedContent' for an existing file, it MUST be the COMPLETE file from line 1 to the end -- never abbreviate or summarize unedited code with '// ...' and never drop existing top-level functions, structs, classes, imports, macros, or types.`;
+
+const FULL_REWRITE_RULE = `FULL FILE CONTENT MANDATE (DO NOT TRUNCATE): 'updatedContent' MUST contain the COMPLETE, exact file content from line 1 to the end. NEVER abbreviate, summarize, or omit unedited code with comments like '// ...' or skip existing top-level functions, structs, classes, imports, macros, or types. Omitting top-level declarations causes immediate integrity check failures and invalidates the proposal.`;
+
+/**
+ * The change-format instruction handed to the model. Edits are the default because a
+ * whole-file rewrite makes the model retype every unedited line, and a single dropped
+ * declaration in that retyping costs an integrity failure plus an auto-fix round trip.
+ */
+export function changeFormatRule(): string {
+    return preferEdits ? EDIT_FORMAT_RULE : FULL_REWRITE_RULE;
+}
+
+const NON_TRIVIAL_SUFFIX = `Do NOT output a proposal whose changes leave the file byte-identical to its current content.`;
 
 export function isPathInsideWorkspace(workDir: string, targetPath: string): boolean {
     const absWorkDir = path.resolve(workDir).toLowerCase();
@@ -590,12 +608,12 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
     2. Do NOT introduce new features or unnecessary refactoring.
     3. SEPARATE LINE BUDGETS: Keep changes to non-test (production) files under ~${maxLineDiff} total diff lines. Test file changes have their own separate budget of ~${maxTestLineDiff} total diff lines and do NOT count against the production budget, so never thin out or drop a needed test to stay within the production budget.
     4. MULTI-FILE PROPOSALS SUPPORTED: Include all modified files in the 'changes' array. You can modify up to 5 related files in a single proposal (e.g., fixing a function signature and updating callers/test files).
-    5. FULL FILE CONTENT MANDATE (DO NOT TRUNCATE): 'updatedContent' MUST contain the COMPLETE, exact file content from line 1 to the end. NEVER abbreviate, summarize, or omit unedited code with comments like '// ...' or skip existing top-level functions, structs, classes, imports, macros, or types. Omitting top-level declarations causes immediate integrity check failures and invalidates the proposal.
+    5. ${changeFormatRule()}
     6. PRESERVE API CONTRACTS: If you modify a function signature, update all relevant caller sites across modified files in 'changes'.
     7. NO UNJUSTIFIED SUPPRESSIONS & VALID APIS: Do NOT resolve warnings or errors by adding language suppression annotations (e.g. @Suppress) or deleting callers. Ensure imported standard library functions exist and are valid.
     8. RESPECT IDIOMATIC TEST PLACEMENT: Follow language-idiomatic conventions for test placement (e.g. in-file conditional modules where supported, or dedicated test files/directories).
-    9. NON-TRIVIAL CHANGES REQUIRED: Each file in 'changes' MUST contain actual code additions, deletions, or modifications to resolve the failure. Do NOT output proposals where 'updatedContent' is identical to existing file content.
-    10. TRAILING NEWLINE MANDATE: 'updatedContent' MUST ALWAYS end with a trailing newline character (\\n).
+    9. NON-TRIVIAL CHANGES REQUIRED: Each file in 'changes' MUST contain actual code additions, deletions, or modifications to resolve the failure. ${NON_TRIVIAL_SUFFIX}
+    10. TRAILING NEWLINE MANDATE: when you supply 'updatedContent', it MUST ALWAYS end with a trailing newline character (\\n).
     11. RESPECT AGENT INSTRUCTIONS: Respect any project agent instructions or repository rules provided in AGENTS.md, .agents files, or related agent configurations.
     12. FILE PATH ACCURACY MANDATE: You MUST preserve the exact file paths, directory structures, and package/module folders of existing files provided in the context or error logs. When modifying an existing file or creating a related test file, match the exact relative folder path and source root conventions of the target codebase. Do NOT invent new package paths or hallucinate directory layouts.
     13. MATCH EXISTING TEST CONVENTIONS: When you add or edit tests, mirror the existing test files provided in the context exactly: same test framework and runner, same import/package/module declarations, same helper and fixture utilities, and the same file naming and directory placement. Do NOT invent test frameworks, helpers, or imports that the existing tests do not already use.
@@ -647,12 +665,12 @@ export async function generateFixProposals(diff: string, workDir: string = proce
     3. MULTI-FILE PROPOSALS SUPPORTED: Each proposal specifies a 'changes' array containing 1 to 5 file modifications. You can pair a production file refactor with a separate unit test file or update caller sites when modifying a signature.
     4. ${enableTestGen ? 'Feel free to generate unit tests for uncovered paths using language-idiomatic test patterns.' : 'Do NOT generate test files or test classes; focus only on code refactoring.'}
     5. Focus on idiomatic improvements, resource cleanup, performance, or edge-case bug fixes. DO NOT propose redundant refactorings for logic or validation that already exists in the file.
-    6. FULL FILE CONTENT MANDATE (DO NOT TRUNCATE): 'updatedContent' MUST contain the COMPLETE, exact file content from line 1 to the end. NEVER abbreviate, summarize, or omit unedited code with comments like '// ...' or skip existing top-level functions, structs, classes, imports, macros, or types. Omitting top-level declarations causes immediate integrity check failures and invalidates the proposal.
+    6. ${changeFormatRule()}
     7. PRESERVE API CONTRACTS: If you modify a function signature, update all relevant call sites across modified files in 'changes'.
     8. NO UNJUSTIFIED SUPPRESSIONS & VALID APIS: Do NOT swallow warnings or delete callers. Verify that all standard library functions and imports exist before using them.
     9. RESPECT IDIOMATIC TEST PLACEMENT: Follow language and project conventions for test structure and placement.
-    10. NON-TRIVIAL CHANGES REQUIRED: Every proposed file change MUST include concrete code modifications, additions, or deletions compared to existing code. Do NOT output a proposal if 'updatedContent' is identical to the current code.
-    11. TRAILING NEWLINE MANDATE: 'updatedContent' MUST ALWAYS end with a trailing newline character (\\n).
+    10. NON-TRIVIAL CHANGES REQUIRED: Every proposed file change MUST include concrete code modifications, additions, or deletions compared to existing code. ${NON_TRIVIAL_SUFFIX}
+    11. TRAILING NEWLINE MANDATE: when you supply 'updatedContent', it MUST ALWAYS end with a trailing newline character (\\n).
     12. RESPECT AGENT INSTRUCTIONS: Respect any project agent instructions or repository rules provided in AGENTS.md, .agents files, or related agent configurations.
     13. FILE PATH ACCURACY MANDATE: You MUST preserve the exact file paths, directory structures, and package/module folders of existing files provided in the context or error logs. When modifying an existing file or creating a related test file, match the exact relative folder path and source root conventions of the target codebase. Do NOT invent new package paths or hallucinate directory layouts.
     14. MATCH EXISTING TEST CONVENTIONS: When you add or edit tests, mirror the existing test files provided in the context exactly: same test framework and runner, same import/package/module declarations, same helper and fixture utilities, and the same file naming and directory placement. Do NOT invent test frameworks, helpers, or imports that the existing tests do not already use.
@@ -704,20 +722,21 @@ export async function attemptAutoFix(
 
     const retrySchema = z.object({
         explanation: z.string().describe('Explanation of how the failure or integrity issue is fixed'),
-        changes: z.array(fileChangeSchema).min(1).describe('Full updated file contents for all modified files'),
+        changes: z.array(fileChangeSchema).min(1).describe('Revised content for all modified files, as targeted edits against the current content (preferred) or full updated file contents'),
     });
 
     const retrySystemPrompt = `
     You are an expert software engineer fixing a failing test, lint check, or file integrity violation caused by a refactoring attempt.
     Analyze the failure log output, original file contents, and current file contents across all modified files in 'changes', then generate revised versions of the file contents that resolve all failures and integrity errors while preserving the core refactoring intent.
+    When the failure output says an edit could not be applied, the file on disk is UNCHANGED: re-derive your edit from the current content shown below (copying 'oldText' verbatim), or fall back to a complete 'updatedContent'.
 
     STRICT RULES:
-    1. FULL FILE CONTENT MANDATE (DO NOT TRUNCATE): 'updatedContent' MUST contain the COMPLETE, exact file content from line 1 to the end. Do NOT delete, truncate, or omit existing top-level functions, composables, structs, or classes from the original files.
+    1. ${changeFormatRule()} Edits are matched against the CURRENT content shown below, not the original content.
     2. PRESERVE API CONTRACTS: Keep existing parameter signatures intact or update callers consistently across modified files.
     3. NO UNJUSTIFIED SUPPRESSIONS & VALID APIS: Do NOT swallow warnings, delete caller functions, or use non-existent library imports.
     4. RESPECT IDIOMATIC TEST PLACEMENT: Follow language conventions for test placement. Do not add test framework imports or test runner annotations to production source files.
     5. NON-TRIVIAL AUTO-FIX: When fixing an integrity violation (such as missing top-level declarations), carefully weave the missing original declarations back into your modified file alongside your refactoring logic. Do NOT resolve the issue by reverting the file entirely to its original content (which produces zero diffs and causes PR creation to be skipped).
-    6. TRAILING NEWLINE MANDATE: 'updatedContent' MUST ALWAYS end with a trailing newline character (\\n).
+    6. TRAILING NEWLINE MANDATE: when you supply 'updatedContent', it MUST ALWAYS end with a trailing newline character (\\n).
     7. RESPECT AGENT INSTRUCTIONS: Respect any project agent instructions or repository rules provided in AGENTS.md, .agents files, or related agent configurations.
     8. MATCH EXISTING TEST CONVENTIONS: When the failure is in a test file, mirror the existing test files provided in the context exactly: same test framework and runner, same import/package/module declarations, and the same helper and fixture utilities. Compilation failures in tests are usually caused by imports, helpers, or assertion APIs that do not exist in this project.
     9. WORKSPACE TOOLS: You have access to interactive workspace tools ('read_file', 'list_directory', 'run_command'). Use them if you need additional workspace context.
@@ -725,7 +744,7 @@ export async function attemptAutoFix(
     try {
         const fileContentsText = currentChanges.map(c => {
             const orig = originalContents?.get(c.filePath);
-            return `--- File: ${c.filePath} ---\n${orig ? `Original Content:\n${orig}\n\n` : ''}Current Content:\n${c.updatedContent}`;
+            return `--- File: ${c.filePath} ---\n${orig ? `Original Content:\n${orig}\n\n` : ''}Current Content:\n${c.updatedContent ?? '(file not written -- its edits could not be applied)'}`;
         }).join('\n\n');
 
         const retryPromptText = `Proposed Fix Title: ${fix.title}\n\nFailure Output (${failedStep}):\n${failureOutput}${agentHeader}${testHeader}\n\nModified Files:\n${fileContentsText}`;
@@ -740,10 +759,37 @@ export async function attemptAutoFix(
                 throw new Error(`Refusing to write outside workspace: "${change.filePath}"`);
             }
             change.filePath = safePath;
-            change.updatedContent = ensureTrailingNewline(change.updatedContent);
             const absolutePath = path.resolve(workDir, safePath);
             fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
-            fs.writeFileSync(absolutePath, change.updatedContent, 'utf-8');
+
+            if (isEditBasedChange(change)) {
+                // Retry edits are anchored to what is on disk now (the proposal already
+                // applied, or the untouched file when its edits failed), which is the
+                // content the model was shown as "Current Content".
+                const current = fs.existsSync(absolutePath) ? fs.readFileSync(absolutePath, 'utf-8') : '';
+                const applied = applyEdits(current, change.edits!, safePath);
+                if (!applied.ok) {
+                    console.warn(`⚠️ Auto-fix edit could not be applied: ${applied.reason}`);
+                    return {
+                        success: false,
+                        updatedChanges: currentChanges,
+                        verifResult: { success: false, failureOutput: applied.reason, failedStep: 'edit-apply' }
+                    };
+                }
+                change.updatedContent = ensureTrailingNewline(applied.content);
+            } else if (change.updatedContent === undefined) {
+                const reason = `Edit Apply Failed: auto-fix change for ${safePath} contained neither 'edits' nor 'updatedContent'.`;
+                console.warn(`⚠️ ${reason}`);
+                return {
+                    success: false,
+                    updatedChanges: currentChanges,
+                    verifResult: { success: false, failureOutput: reason, failedStep: 'edit-apply' }
+                };
+            } else {
+                change.updatedContent = ensureTrailingNewline(change.updatedContent);
+            }
+
+            fs.writeFileSync(absolutePath, change.updatedContent!, 'utf-8');
         }
 
         console.log(`Rerunning verification after auto-fix attempt...`);

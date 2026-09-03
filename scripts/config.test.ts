@@ -4,6 +4,8 @@ import {
     getModel,
     FixProposal,
     getProposalChanges,
+    isEditBasedChange,
+    fileChangeSchema,
     ensureTrailingNewline,
     fixesResponseSchema,
     maxPRs,
@@ -111,6 +113,50 @@ describe('config module test suite', () => {
             assert.equal(changes.length, 1);
             assert.equal(changes[0].filePath, 'src/lib.rs');
             assert.equal(changes[0].updatedContent, 'pub fn lib() {}\n');
+        });
+
+        it('keeps edit-based changes intact without inventing updatedContent', () => {
+            const fix: FixProposal = {
+                slug: 'edit-slug',
+                title: 'Edit PR',
+                description: 'Description',
+                changes: [
+                    { filePath: 'src/main.rs', edits: [{ oldText: 'fn main() {}', newText: 'fn main() { run(); }' }] },
+                ]
+            };
+            const changes = getProposalChanges(fix);
+            assert.equal(changes.length, 1);
+            assert.equal(changes[0].edits?.length, 1);
+            // Content is resolved when the edits are applied to the real file, not here;
+            // fabricating a value would truncate the target file to a single newline.
+            assert.equal(changes[0].updatedContent, undefined);
+        });
+
+        it('drops a change that carries neither edits nor updatedContent', () => {
+            const fix: FixProposal = {
+                slug: 'empty-slug',
+                title: 'Empty PR',
+                description: 'Description',
+                changes: [
+                    { filePath: 'src/ghost.rs' },
+                    { filePath: 'src/real.rs', updatedContent: 'fn real() {}' },
+                ]
+            };
+            const changes = getProposalChanges(fix);
+            assert.equal(changes.length, 1);
+            assert.equal(changes[0].filePath, 'src/real.rs');
+        });
+    });
+
+    describe('fileChangeSchema', () => {
+        it('accepts an edits-only change, a content-only change, and reports which is edit-based', () => {
+            const editChange = fileChangeSchema.parse({
+                filePath: 'a.ts',
+                edits: [{ oldText: 'a', newText: 'b' }],
+            });
+            const contentChange = fileChangeSchema.parse({ filePath: 'b.ts', updatedContent: 'x\n' });
+            assert.equal(isEditBasedChange(editChange), true);
+            assert.equal(isEditBasedChange(contentChange), false);
         });
     });
 

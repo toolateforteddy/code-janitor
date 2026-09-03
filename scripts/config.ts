@@ -42,6 +42,12 @@ export const maxLlmToolSteps = parseInt(process.env.MAX_LLM_TOOL_STEPS || '5', 1
 // Deduplication is on unless explicitly disabled: without it a nightly repair sweep
 // re-observes the same red main branch and opens a fresh PR for the same fix every run.
 export const dedupePRs = process.env.DEDUPE_PRS !== 'false';
+// Ask the model for targeted search/replace edits instead of whole-file rewrites.
+// Rewrites force the model to re-emit every unedited line, which is where truncated
+// declarations (and the integrity failures that reject them) come from. Set
+// EDIT_FORMAT=rewrite to go back to full-file content for every change.
+export const editFormat = (process.env.EDIT_FORMAT || 'edits').toLowerCase();
+export const preferEdits = editFormat !== 'rewrite';
 
 export const STATE_FILE = '.janitor-state.json';
 
@@ -54,12 +60,33 @@ export interface JanitorState {
 }
 
 // Schema for proposed atomic fixes
+export const fileEditSchema = z.object({
+    oldText: z.string().describe('Exact snippet copied verbatim from the current file content (including indentation) that should be replaced. Must appear exactly once in the file unless replaceAll is true.'),
+    newText: z.string().describe('Replacement text for oldText. Use an empty string to delete the snippet.'),
+    replaceAll: z.boolean().optional().describe('Set to true only when every occurrence of oldText in the file should be replaced'),
+});
+
+export type FileEdit = z.infer<typeof fileEditSchema>;
+
+// A file change is expressed EITHER as targeted search/replace edits (preferred for
+// existing files: untouched code is preserved by construction, so a truncated
+// response cannot silently drop declarations) OR as a full-file rewrite (required
+// for new files). Neither field is required by the schema: a `refine`/required
+// combination would fail JSON-schema validation for the whole batch when a model
+// gets one change wrong, discarding every good proposal alongside it. Changes that
+// carry neither are dropped in getProposalChanges instead.
 export const fileChangeSchema = z.object({
     filePath: z.string().describe('Relative path to the file being created or modified (MUST preserve existing repository directory structure and package folders)'),
-    updatedContent: z.string().describe('Full new content for the file'),
+    edits: z.array(fileEditSchema).min(1).max(20).optional().describe('Targeted search/replace edits to apply to the existing file. PREFERRED for modifying existing files.'),
+    updatedContent: z.string().optional().describe('Full new content for the file. Required for NEW files; for existing files prefer "edits".'),
 });
 
 export type FileChange = z.infer<typeof fileChangeSchema>;
+
+/** True when the change is expressed as targeted edits rather than a whole-file rewrite. */
+export function isEditBasedChange(change: FileChange): boolean {
+    return Array.isArray(change.edits) && change.edits.length > 0;
+}
 
 export const fixProposalSchema = z.object({
     slug: z.string().describe('Short url-safe string for git branch, e.g., fix-nil-pointer'),
@@ -93,10 +120,14 @@ export function getProposalChanges(fix: FixProposal): FileChange[] {
     } else if (fix.filePath && fix.updatedContent !== undefined) {
         changes = [{ filePath: fix.filePath, updatedContent: fix.updatedContent }];
     }
-    return changes.map(c => ({
-        ...c,
-        updatedContent: ensureTrailingNewline(c.updatedContent)
-    }));
+    return changes
+        // A change with neither edits nor content says nothing about what to write;
+        // normalizing it would truncate the target file to a single newline.
+        .filter(c => isEditBasedChange(c) || c.updatedContent !== undefined)
+        .map(c => ({
+            ...c,
+            updatedContent: c.updatedContent !== undefined ? ensureTrailingNewline(c.updatedContent) : undefined,
+        }));
 }
 
 export function getModel(prov: string, mod: string) {
