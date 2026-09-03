@@ -14,7 +14,7 @@ import {
 } from './config.js';
 import { runVerification, logFailedDiff, cleanupWorktree } from './git.js';
 import { validateFixIntegrity } from './integrity.js';
-import { attemptAutoFix, findFileInWorkspaceByBasename } from './ai.js';
+import { attemptAutoFix, findFileInWorkspaceByBasename, sanitizeRelativePath } from './ai.js';
 
 export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir: string, modeType: 'repair' | 'refactor' = 'refactor'): boolean {
     const execOpts: ExecFileSyncOptions = { cwd: workDir, stdio: ['pipe', 'pipe', 'pipe'] };
@@ -28,8 +28,8 @@ export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir:
         execFileSync('git', ['config', 'user.email', 'bot@codejanitor.local'], execOpts);
         for (const change of changes) {
             if (change.filePath) {
-                const cleanPath = change.filePath.trim().replace(/^\.\//, '').replace(/^\/+/, '');
-                if (fs.existsSync(path.resolve(workDir, cleanPath))) {
+                const cleanPath = sanitizeRelativePath(workDir, change.filePath);
+                if (cleanPath && fs.existsSync(path.resolve(workDir, cleanPath))) {
                     execFileSync('git', ['add', cleanPath], execOpts);
                 }
             }
@@ -92,7 +92,10 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
 
         console.log(`📝 Applying ${changes.length} file change(s) for '${fix.slug}':`);
         for (const change of changes) {
-            let cleanPath = change.filePath.trim().replace(/^\.\//, '').replace(/^\/+/, '');
+            let cleanPath = sanitizeRelativePath(worktreePath, change.filePath) ?? '';
+            if (!cleanPath) {
+                throw new Error(`Refusing to write outside workspace: "${change.filePath}"`);
+            }
             let absolutePath = path.resolve(worktreePath, cleanPath);
 
             if (!fs.existsSync(absolutePath)) {
@@ -172,7 +175,10 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
 
         console.log(`📝 Applying ${changes.length} file change(s) for '${fix.slug}':`);
         for (const change of changes) {
-            const cleanPath = change.filePath.trim().replace(/^\.\//, '').replace(/^\/+/, '');
+            const cleanPath = sanitizeRelativePath(workDir, change.filePath);
+            if (!cleanPath) {
+                throw new Error(`Refusing to write outside workspace: "${change.filePath}"`);
+            }
             change.filePath = cleanPath;
             const absolutePath = path.resolve(workDir, cleanPath);
             fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
