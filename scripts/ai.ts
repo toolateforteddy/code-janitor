@@ -415,7 +415,10 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
     console.log("🔧 Querying model for repair proposals...");
     const result = await generateStructuredWithTools(fixesResponseSchema, repairPrompt, promptText, tools);
 
-    return result.fixes;
+    if (result.fixes.length > maxPRs) {
+        console.log(`⚠️ Model returned ${result.fixes.length} repair proposals; capping to maxPRs (${maxPRs}).`);
+    }
+    return result.fixes.slice(0, maxPRs);
 }
 
 
@@ -460,7 +463,10 @@ export async function generateFixProposals(diff: string, workDir: string = proce
     console.log("🤖 Querying model for refactor proposals...");
     const result = await generateStructuredWithTools(fixesResponseSchema, systemPrompt, promptText, tools);
 
-    return result.fixes;
+    if (result.fixes.length > maxPRs) {
+        console.log(`⚠️ Model returned ${result.fixes.length} refactor proposals; capping to maxPRs (${maxPRs}).`);
+    }
+    return result.fixes.slice(0, maxPRs);
 }
 
 export async function attemptAutoFix(

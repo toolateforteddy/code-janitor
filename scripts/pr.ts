@@ -16,12 +16,15 @@ import { runVerification, logFailedDiff, cleanupWorktree } from './git.js';
 import { validateFixIntegrity } from './integrity.js';
 import { attemptAutoFix, findFileInWorkspaceByBasename, sanitizeRelativePath } from './ai.js';
 
-export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir: string, modeType: 'repair' | 'refactor' = 'refactor'): boolean {
+export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir: string, modeType: 'repair' | 'refactor' = 'refactor', resolvedChanges?: FileChange[]): boolean {
     const execOpts: ExecFileSyncOptions = { cwd: workDir, stdio: ['pipe', 'pipe', 'pipe'] };
     const emoji = modeType === 'repair' ? '🚨' : '🧹';
     const prPrefix = modeType === 'repair' ? 'fix' : 'refactor';
 
-    const changes = getProposalChanges(fix);
+    // Prefer the caller's already-resolved changes (correct post-remap/post-auto-fix file
+    // paths) over re-deriving from `fix`, which still carries the model's original proposed
+    // paths -- those can differ from what actually ended up on disk.
+    const changes = resolvedChanges ?? getProposalChanges(fix);
 
     try {
         execFileSync('git', ['config', 'user.name', 'Code Janitor Bot'], execOpts);
@@ -34,10 +37,15 @@ export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir:
                 }
             }
         }
-        execFileSync('git', ['add', '-A'], execOpts);
 
-        const status = execFileSync('git', ['status', '--porcelain'], { cwd: workDir, stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' });
-        if (!status.trim()) {
+        // Stage only the files the proposal (and any auto-fix retry) actually touched --
+        // NOT `git add -A`, which would also sweep in whatever the test/lint run left
+        // behind (build artifacts, caches, a stray .janitor-state.json) into the PR.
+        // Check the INDEX specifically (not full working-tree status): unstaged/untracked
+        // dirt left over from a test run would otherwise look like "something to commit"
+        // and send us into `git commit` with nothing actually staged.
+        const stagedFiles = execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: workDir, stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' });
+        if (!stagedFiles.trim()) {
             const targetFile = fix.filePath || (changes.length > 0 ? changes.map(c => c.filePath).join(', ') : fix.slug);
             console.warn(`⚠️ No staged changes found in worktree for fix '${fix.slug}' (${targetFile}). Skipping PR creation.`);
             return false;
@@ -127,6 +135,7 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
 
         const integrity = validateFixIntegrity(originalContents, changes);
         let verifResult: ReturnType<typeof runVerification>;
+        let finalChanges = changes;
 
         if (!integrity.valid) {
             console.warn(`⚠️ Integrity validation failed for '${fix.slug}': ${integrity.reason}`);
@@ -138,6 +147,15 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
         if (!verifResult.success) {
             const autoFixRes = await attemptAutoFix(fix, verifResult.failedStep, verifResult.failureOutput, changes, worktreePath, originalContents);
             verifResult = autoFixRes.verifResult;
+            finalChanges = autoFixRes.updatedChanges;
+
+            if (verifResult.success) {
+                const postFixIntegrity = validateFixIntegrity(originalContents, autoFixRes.updatedChanges);
+                if (!postFixIntegrity.valid) {
+                    console.warn(`⚠️ Integrity validation failed after auto-fix for '${fix.slug}': ${postFixIntegrity.reason}`);
+                    verifResult = { success: false, failureOutput: postFixIntegrity.reason, failedStep: 'integrity' };
+                }
+            }
         }
 
         if (!verifResult.success) {
@@ -146,7 +164,7 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
             return false;
         }
 
-        return createAndSubmitPR(fix, branchName, worktreePath, modeType);
+        return createAndSubmitPR(fix, branchName, worktreePath, modeType, finalChanges);
     } catch (error) {
         console.error(`❌ Error processing fix '${fix.slug}':`, error);
         throw error;
@@ -203,6 +221,7 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
 
         const integrity = validateFixIntegrity(originalContents, changes);
         let verifResult: ReturnType<typeof runVerification>;
+        let finalChanges = changes;
 
         if (!integrity.valid) {
             console.warn(`⚠️ Integrity validation failed for '${fix.slug}': ${integrity.reason}`);
@@ -214,6 +233,15 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
         if (!verifResult.success) {
             const autoFixRes = await attemptAutoFix(fix, verifResult.failedStep, verifResult.failureOutput, changes, workDir, originalContents);
             verifResult = autoFixRes.verifResult;
+            finalChanges = autoFixRes.updatedChanges;
+
+            if (verifResult.success) {
+                const postFixIntegrity = validateFixIntegrity(originalContents, autoFixRes.updatedChanges);
+                if (!postFixIntegrity.valid) {
+                    console.warn(`⚠️ Integrity validation failed after auto-fix for '${fix.slug}': ${postFixIntegrity.reason}`);
+                    verifResult = { success: false, failureOutput: postFixIntegrity.reason, failedStep: 'integrity' };
+                }
+            }
         }
 
         if (!verifResult.success) {
@@ -226,7 +254,7 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
             return false;
         }
 
-        return createAndSubmitPR(fix, branchName, workDir, modeType);
+        return createAndSubmitPR(fix, branchName, workDir, modeType, finalChanges);
     } catch (error) {
         console.error(`❌ Error processing fix '${fix.slug}':`, error);
         try {

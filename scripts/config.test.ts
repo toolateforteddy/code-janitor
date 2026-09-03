@@ -5,6 +5,8 @@ import {
     FixProposal,
     getProposalChanges,
     ensureTrailingNewline,
+    fixesResponseSchema,
+    maxPRs,
 } from './config.js';
 
 describe('config module test suite', () => {
@@ -80,6 +82,20 @@ describe('config module test suite', () => {
             assert.equal(changes.length, 1);
             assert.equal(changes[0].filePath, 'src/lib.rs');
             assert.equal(changes[0].updatedContent, 'pub fn lib() {}\n');
+        });
+    });
+
+    describe('fixesResponseSchema', () => {
+        it('does not reject a response with more fixes than maxPRs (capping happens in code, not schema validation)', () => {
+            const overCount = maxPRs + 5;
+            const fixes = Array.from({ length: overCount }, (_, i) => ({
+                slug: `fix-${i}`,
+                title: `Fix ${i}`,
+                description: 'desc',
+                changes: [{ filePath: `file${i}.ts`, updatedContent: 'content' }],
+            }));
+            const parsed = fixesResponseSchema.parse({ fixes });
+            assert.equal(parsed.fixes.length, overCount);
         });
     });
 

@@ -50,7 +50,34 @@ export function runVerification(lCmd: string, tCmd: string, tTimeoutMs?: number,
     return { success: true, failureOutput: '', failedStep: '' };
 }
 
+/**
+ * Resolves the repository's actual default branch (e.g. "main"), not just whatever
+ * happens to be checked out. This matters for `workflow_dispatch` runs triggered from
+ * a non-default branch, and for repair PRs whose worktree/branch must fork from the
+ * branch `gh pr create` will target by default.
+ */
 export function getDefaultBranch(): string {
+    try {
+        const ghOutput = execSync('gh repo view --json defaultBranchRef --jq .defaultBranchRef.name', {
+            encoding: 'utf-8',
+            stdio: ['pipe', 'pipe', 'pipe'],
+        }).trim();
+        if (ghOutput) return ghOutput;
+    } catch {
+        // gh unavailable/unauthenticated, or not run inside a GitHub repo -- fall through.
+    }
+
+    try {
+        const symbolicRef = execSync('git symbolic-ref refs/remotes/origin/HEAD', {
+            encoding: 'utf-8',
+            stdio: ['pipe', 'pipe', 'pipe'],
+        }).trim();
+        const match = symbolicRef.match(/^refs\/remotes\/origin\/(.+)$/);
+        if (match && match[1]) return match[1];
+    } catch {
+        // origin/HEAD isn't always set locally by actions/checkout's fetch -- fall through.
+    }
+
     try {
         return execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf-8' }).trim() || 'main';
     } catch {
