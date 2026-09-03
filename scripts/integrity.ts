@@ -1,6 +1,20 @@
 import * as path from 'path';
 import { FileChange } from './config.js';
 
+// Tried in order per line; the first pattern that matches wins. Go's grammar (method
+// receivers, "type"-prefixed declarations) doesn't fit the shared C-like keyword
+// alternation below, so it gets its own patterns ahead of it.
+const DECLARATION_PATTERNS: RegExp[] = [
+    // Go method with receiver: func (r *T) Name(...) or func (r *T) Name[T any](...)
+    /^func\s+\([^)]*\)\s+([A-Za-z0-9_]+)\s*[\[(]/,
+    // Go top-level function: func Name(...) or func Name[T any](...)
+    /^func\s+([A-Za-z0-9_]+)\s*[\[(]/,
+    // Go type declaration: type Name struct { / interface { / = Alias / OtherType
+    /^type\s+([A-Za-z0-9_]+)\b/,
+    // Shared C-like / OOP / scripting language keywords.
+    /^(?:export\s+)?(?:pub\s+)?(?:async\s+)?(?:@\w+(?:\([^)]*\))?\s+)*(?:fun|function|class|interface|object|struct|enum|trait|def|fn)\s+([A-Za-z0-9_]+)/,
+];
+
 export function extractTopLevelDeclarations(content: string, _ext: string): string[] {
     const lines = content.split(/\r?\n/);
     const declarations: string[] = [];
@@ -8,9 +22,12 @@ export function extractTopLevelDeclarations(content: string, _ext: string): stri
     for (const line of lines) {
         if (/^\s+/.test(line)) continue;
 
-        const match = line.match(/^(?:export\s+)?(?:pub\s+)?(?:async\s+)?(?:@\w+(?:\([^)]*\))?\s+)*(?:fun|function|class|interface|object|struct|enum|trait|def|fn)\s+([A-Za-z0-9_]+)/);
-        if (match && match[1]) {
-            declarations.push(match[1]);
+        for (const pattern of DECLARATION_PATTERNS) {
+            const match = line.match(pattern);
+            if (match && match[1]) {
+                declarations.push(match[1]);
+                break;
+            }
         }
     }
     return declarations;

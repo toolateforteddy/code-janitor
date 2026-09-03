@@ -150,6 +150,7 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 | `enable_test_generation` | Whether to write unit tests for uncovered code | `true` |
 | `max_prs_per_run` | Maximum atomic PRs to open in one run | `3` |
 | `max_line_diff` | Hard cap on total diff lines per atomic PR | `100` |
+| `max_concurrency` | Maximum number of fixes to process in parallel (via git worktrees) per run | `3` |
 | `reviewers` | Comma-separated GitHub handles or teams to request review | `''` |
 | `draft_pr` | Open PRs in Draft state | `true` |
 | `janitor_mode` | Execution mode (`auto`, `repair-only`, `refactor-only`) | `'auto'` |

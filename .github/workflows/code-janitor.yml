@@ -53,6 +53,11 @@ on:
         type: number
         required: false
         default: 100
+      max_concurrency:
+        description: 'Maximum number of fixes to process in parallel (via git worktrees) per run'
+        type: number
+        required: false
+        default: 3
       reviewers:
         description: 'Comma-separated GitHub handles or teams to request review'
         type: string
@@ -68,6 +73,16 @@ on:
         type: string
         required: false
         default: 'auto'
+      enable_llm_tools:
+        description: 'Allow LLM to call workspace tools (read files, list directories, run safe commands)'
+        type: boolean
+        required: false
+        default: true
+      max_llm_tool_steps:
+        description: 'Maximum tool call steps per LLM request'
+        type: number
+        required: false
+        default: 5
       go_version:
         description: 'Go version (e.g. "1.22", "oldstable", "stable"). If empty, reads from go.mod.'
         type: string
@@ -130,9 +145,12 @@ jobs:
           enable_test_generation: ${{ inputs.enable_test_generation }}
           max_prs_per_run: ${{ inputs.max_prs_per_run }}
           max_line_diff: ${{ inputs.max_line_diff }}
+          max_concurrency: ${{ inputs.max_concurrency }}
           reviewers: ${{ inputs.reviewers }}
           draft_pr: ${{ inputs.draft_pr }}
           janitor_mode: ${{ inputs.janitor_mode }}
+          enable_llm_tools: ${{ inputs.enable_llm_tools }}
+          max_llm_tool_steps: ${{ inputs.max_llm_tool_steps }}
           go_version: ${{ inputs.go_version }}
           node_version: ${{ inputs.node_version }}
           python_version: ${{ inputs.python_version }}

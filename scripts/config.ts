@@ -51,8 +51,13 @@ export const fixProposalSchema = z.object({
     updatedContent: z.string().optional().describe('Deprecated single file updated content; prefer "changes" array'),
 });
 
+// No .max(maxPRs) here: with generateObject/generateText JSON-schema validation, a
+// response that returns more fixes than requested would fail schema validation
+// entirely and the whole batch would be discarded. Cap in code instead (see
+// generateRepairProposals/generateFixProposals in ai.ts) so a model that overshoots
+// still yields the first `maxPRs` proposals rather than zero.
 export const fixesResponseSchema = z.object({
-    fixes: z.array(fixProposalSchema).max(maxPRs),
+    fixes: z.array(fixProposalSchema),
 });
 
 export type FixProposal = z.infer<typeof fixProposalSchema>;

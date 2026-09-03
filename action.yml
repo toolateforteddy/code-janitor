@@ -46,6 +46,10 @@ inputs:
     description: 'Hard cap on total diff lines per atomic PR'
     required: false
     default: '100'
+  max_concurrency:
+    description: 'Maximum number of fixes to process in parallel (via git worktrees) per run'
+    required: false
+    default: '3'
   reviewers:
     description: 'Comma-separated GitHub handles or teams to request review'
     required: false
@@ -210,6 +214,7 @@ runs:
         ENABLE_TEST_GEN: ${{ inputs.enable_test_generation }}
         MAX_PRS: ${{ inputs.max_prs_per_run }}
         MAX_LINE_DIFF: ${{ inputs.max_line_diff }}
+        MAX_CONCURRENCY: ${{ inputs.max_concurrency }}
         REVIEWERS: ${{ inputs.reviewers }}
         DRAFT_PR: ${{ inputs.draft_pr }}
         JANITOR_MODE: ${{ inputs.janitor_mode }}

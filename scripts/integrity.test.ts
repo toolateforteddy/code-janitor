@@ -20,6 +20,68 @@ fun NeedItemTile() { }
             assert.deepEqual(decls, ['NeedPhaseContent', 'NeedItemTile']);
         });
 
+        it('extracts Go top-level functions, methods with receivers, and type declarations', () => {
+            const goCode = `
+package handlers
+
+import "net/http"
+
+type Server struct {
+	addr string
+}
+
+type Handler interface {
+	Serve(w http.ResponseWriter)
+}
+
+func NewServer(addr string) *Server {
+	return &Server{addr: addr}
+}
+
+func (s *Server) Start() error {
+	return nil
+}
+
+func Generic[T any](items []T) []T {
+	return items
+}
+`;
+            const decls = extractTopLevelDeclarations(goCode, '.go');
+            assert.deepEqual(decls, ['Server', 'Handler', 'NewServer', 'Start', 'Generic']);
+        });
+
+        it('rejects a Go refactor that drops a method or type (default janitor_mode language)', () => {
+            const original = `
+package auth
+
+type Token struct {
+	Value string
+}
+
+func (t *Token) Valid() bool {
+	return t.Value != ""
+}
+
+func NewToken(v string) *Token {
+	return &Token{Value: v}
+}
+`;
+            const brokenUpdated = `
+package auth
+
+type Token struct {
+	Value string
+}
+
+func NewToken(v string) *Token {
+	return &Token{Value: v}
+}
+`;
+            const res = validateFixIntegrity(original, brokenUpdated, 'token.go');
+            assert.equal(res.valid, false);
+            assert.match(res.reason, /Valid/);
+        });
+
         it('detects when top-level functions are omitted in refactored code', () => {
             const original = `
 @Composable
