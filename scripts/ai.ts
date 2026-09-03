@@ -1,4 +1,4 @@
-import { generateObject, tool } from 'ai';
+import { generateObject, generateText, tool, Output } from 'ai';
 import { z } from 'zod';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -23,9 +23,26 @@ import {
 import { runVerification, logFailedDiff, runCmd } from './git.js';
 
 export function isPathInsideWorkspace(workDir: string, targetPath: string): boolean {
-    const absWorkDir = path.resolve(workDir);
-    const absTarget = path.resolve(workDir, targetPath);
-    return absTarget.toLowerCase().startsWith(absWorkDir.toLowerCase());
+    const absWorkDir = path.resolve(workDir).toLowerCase();
+    const absTarget = path.resolve(workDir, targetPath).toLowerCase();
+    return absTarget === absWorkDir || absTarget.startsWith(absWorkDir + path.sep);
+}
+
+/**
+ * Normalizes an LLM-proposed relative file path and rejects anything that would
+ * escape the workspace root (e.g. "../../etc/passwd"). Returns null when unsafe.
+ */
+export function sanitizeRelativePath(workDir: string, rawPath: string): string | null {
+    if (!rawPath) return null;
+    const cleaned = rawPath.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
+    const normalized = path.normalize(cleaned);
+    if (!cleaned || normalized.startsWith('..') || path.isAbsolute(normalized)) {
+        return null;
+    }
+    if (!isPathInsideWorkspace(workDir, normalized)) {
+        return null;
+    }
+    return normalized;
 }
 
 const ALLOWED_COMMAND_PREFIXES = [
@@ -35,10 +52,10 @@ const ALLOWED_COMMAND_PREFIXES = [
 export function isCommandAllowed(command: string): boolean {
     const trimmed = command.trim();
     if (!trimmed) return false;
-    if (/[;&|>`]/.test(trimmed)) {
-        if (trimmed.includes('>') || trimmed.includes(';')) {
-            return false;
-        }
+    // Reject any shell metacharacter that could chain commands, redirect output,
+    // or invoke substitution (e.g. `git log && curl ...`, `$(cat secret)`).
+    if (/[;&|>`$(){}<\n]/.test(trimmed)) {
+        return false;
     }
     const lower = trimmed.toLowerCase();
     return ALLOWED_COMMAND_PREFIXES.some(prefix => lower === prefix || lower.startsWith(prefix + ' '));
@@ -149,6 +166,39 @@ export function createJanitorTools(workDir: string = process.cwd()) {
             },
         }),
     };
+}
+
+/**
+ * Generates a schema-typed object from the model. `generateObject` (AI SDK v4) does not
+ * accept `tools`/`maxSteps`, so when workspace tools are enabled we route through
+ * `generateText` with `experimental_output` instead, letting the model call tools across
+ * multiple steps before producing its final structured response.
+ */
+async function generateStructuredWithTools<T extends z.ZodTypeAny>(
+    schema: T,
+    system: string,
+    prompt: string,
+    tools: ReturnType<typeof createJanitorTools>
+): Promise<z.infer<T>> {
+    if (tools) {
+        const result = await generateText({
+            model: getModel(provider, modelName),
+            tools,
+            maxSteps: maxLlmToolSteps,
+            system,
+            prompt,
+            experimental_output: Output.object({ schema }),
+        });
+        return result.experimental_output;
+    }
+
+    const result = await generateObject({
+        model: getModel(provider, modelName),
+        schema,
+        system,
+        prompt,
+    });
+    return result.object;
 }
 
 
@@ -362,15 +412,9 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
     }
 
     console.log("🔧 Querying model for repair proposals...");
-    const response = await generateObject({
-        model: getModel(provider, modelName),
-        schema: fixesResponseSchema,
-        system: repairPrompt,
-        prompt: promptText,
-        ...(tools ? { tools, maxSteps: maxLlmToolSteps } : {}),
-    });
+    const result = await generateStructuredWithTools(fixesResponseSchema, repairPrompt, promptText, tools);
 
-    return response.object.fixes;
+    return result.fixes;
 }
 
 
@@ -413,15 +457,9 @@ export async function generateFixProposals(diff: string, workDir: string = proce
     }
 
     console.log("🤖 Querying model for refactor proposals...");
-    const response = await generateObject({
-        model: getModel(provider, modelName),
-        schema: fixesResponseSchema,
-        system: systemPrompt,
-        prompt: promptText,
-        ...(tools ? { tools, maxSteps: maxLlmToolSteps } : {}),
-    });
+    const result = await generateStructuredWithTools(fixesResponseSchema, systemPrompt, promptText, tools);
 
-    return response.object.fixes;
+    return result.fixes;
 }
 
 export async function attemptAutoFix(
@@ -466,19 +504,18 @@ export async function attemptAutoFix(
 
         const retryPromptText = `Proposed Fix Title: ${fix.title}\n\nFailure Output (${failedStep}):\n${failureOutput}${agentHeader}\n\nModified Files:\n${fileContentsText}`;
 
-        const retryResponse = await generateObject({
-            model: getModel(provider, modelName),
-            schema: retrySchema,
-            system: retrySystemPrompt,
-            prompt: retryPromptText,
-            ...(tools ? { tools, maxSteps: maxLlmToolSteps } : {}),
-        });
+        const retryResult = await generateStructuredWithTools(retrySchema, retrySystemPrompt, retryPromptText, tools);
 
-        console.log(`🤖 Auto-fix proposal: ${retryResponse.object.explanation}`);
-        const updatedChanges = retryResponse.object.changes;
+        console.log(`🤖 Auto-fix proposal: ${retryResult.explanation}`);
+        const updatedChanges = retryResult.changes;
         for (const change of updatedChanges) {
+            const safePath = sanitizeRelativePath(workDir, change.filePath);
+            if (!safePath) {
+                throw new Error(`Refusing to write outside workspace: "${change.filePath}"`);
+            }
+            change.filePath = safePath;
             change.updatedContent = ensureTrailingNewline(change.updatedContent);
-            const absolutePath = path.resolve(workDir, change.filePath);
+            const absolutePath = path.resolve(workDir, safePath);
             fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
             fs.writeFileSync(absolutePath, change.updatedContent, 'utf-8');
         }
