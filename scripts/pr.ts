@@ -16,6 +16,7 @@ import {
 import { runVerification, logFailedDiff, cleanupWorktree } from './git.js';
 import { prepareWorktreeDependencies } from './deps.js';
 import { validateFixIntegrity } from './integrity.js';
+import { formatLineBudgetSummary } from './linebudget.js';
 import { attemptAutoFix, findFileInWorkspaceByBasename, sanitizeRelativePath } from './ai.js';
 
 export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir: string, modeType: 'repair' | 'refactor' = 'refactor', resolvedChanges?: FileChange[]): boolean {
@@ -143,6 +144,8 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
         // proposal changes.
         prepareWorktreeDependencies(mainWorkspace, worktreePath);
 
+        console.log(`📏 Line budget for '${fix.slug}': ${formatLineBudgetSummary(originalContents, changes)}`);
+
         const integrity = validateFixIntegrity(originalContents, changes);
         let verifResult: ReturnType<typeof runVerification>;
         let finalChanges = changes;
@@ -228,6 +231,8 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
             return false;
         }
         console.log(`Working tree status (${fix.slug}):\n${statusPorcelain.split('\n').map(l => '  ' + l).join('\n')}`);
+
+        console.log(`📏 Line budget for '${fix.slug}': ${formatLineBudgetSummary(originalContents, changes)}`);
 
         const integrity = validateFixIntegrity(originalContents, changes);
         let verifResult: ReturnType<typeof runVerification>;

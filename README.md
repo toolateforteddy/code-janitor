@@ -156,6 +156,7 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 | `max_prs_per_run` | Maximum atomic PRs to open in one run | `3` |
 | `max_line_diff` | Hard cap on total diff lines to non-test files per atomic PR | `100` |
 | `max_test_line_diff` | Hard cap on total diff lines to test files per atomic PR (counted separately from `max_line_diff`) | `200` |
+| `enforce_line_budget` | Reject proposals whose measured diff exceeds the caps above (set `false` for prompt-only guidance) | `true` |
 | `max_concurrency` | Maximum number of fixes to process in parallel (via git worktrees) per run | `3` |
 | `reviewers` | Comma-separated GitHub handles or teams to request review | `''` |
 | `draft_pr` | Open PRs in Draft state | `true` |
@@ -237,3 +238,16 @@ To prevent context overflow and control token costs, output size caps are strict
 - **Directory Entry Limit (`list_directory`):** Truncated at **100 entries**.
 - **Path Traversal Protection:** All file paths are strictly validated (`isPathInsideWorkspace`) to prevent access outside the repository root.
 - **Command Whitelist & Chaining Protection:** Destructive commands (`rm`, `mv`, `git push`, etc.) and shell operators (redirection `>`, command chaining `;`) are blocked.
+
+---
+
+## 📏 Line Budget Enforcement
+
+`max_line_diff` and `max_test_line_diff` are stated in the model prompt *and* enforced in code — a model is free to ignore prompt guidance, so the proposal is measured before a PR is opened.
+
+- Each proposal's diff is counted per file as **added + removed lines** against the file's pre-change content (a new file counts every line as added), using the same minimal line edit script `git diff --numstat` reports.
+- Files are classified by path: anything matching a language test convention (`*_test.go`, `*.test.ts`, `FooTest.kt`, `*_spec.rb`) or living under a test directory (`tests/`, `__tests__/`, `src/test/`) counts against `max_test_line_diff`; everything else counts against `max_line_diff`. The two budgets are independent, so a large test never squeezes out the production change (or vice versa).
+- Every run logs its usage: `📏 Line budget for 'fix-nil-deref': production 42/100 diff lines, tests 88/200 diff lines`.
+- An over-budget proposal fails validation alongside the other integrity checks. The failure reason (with the measured counts and offending files) is fed to the auto-fix retry, which gets one chance to shrink the change; if it still exceeds the budget, the branch is discarded and no PR is opened.
+
+Set `enforce_line_budget: false` to fall back to prompt-only guidance.
