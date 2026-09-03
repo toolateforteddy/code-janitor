@@ -9,6 +9,7 @@ import {
     mode,
     targetPath,
     excludePathsStr,
+    dedupePRs,
 } from './config.js';
 import {
     runVerification,
@@ -22,11 +23,30 @@ import {
     generateFixProposals,
 } from './ai.js';
 import { processFixes } from './pr.js';
+import {
+    fetchExistingJanitorPRs,
+    filterDuplicateProposals,
+    describeExistingJanitorPRs,
+    ExistingJanitorPR,
+} from './dedupe.js';
 
 export async function main() {
     console.log(`🧹 Code Janitor initializing [provider: ${provider} | model: ${modelName} | mode: ${mode}]`);
 
     const defaultBranch = getDefaultBranch();
+
+    // Pull the janitor's own prior PRs up front so both the prompt and the post-hoc
+    // filter can suppress work that's already submitted. A nightly repair sweep sees
+    // the same red main branch until the pending fix merges, so without this it opens
+    // a brand-new PR for the same fix on every run.
+    let existingPRs: ExistingJanitorPR[] = [];
+    if (dedupePRs) {
+        existingPRs = fetchExistingJanitorPRs();
+        console.log(`🔁 Deduplication: found ${existingPRs.length} existing janitor PR(s) to compare proposals against.`);
+    } else {
+        console.log("🔁 Deduplication disabled (DEDUPE_PRS=false).");
+    }
+    const existingPRContext = dedupePRs ? describeExistingJanitorPRs(existingPRs) : '';
 
     // -------------------------------------------------------------
     // STEP 1: INITIAL HEALTH CHECK
@@ -55,8 +75,10 @@ export async function main() {
         }
 
         console.log("🔧 Entering REPAIR mode to fix failing tests/lints...");
-        const repairFixes = await generateRepairProposals(buildErrorLogs);
-        console.log(`Found ${repairFixes.length} proposed repair tasks.`);
+        const proposedRepairs = await generateRepairProposals(buildErrorLogs, process.cwd(), existingPRContext);
+        const repairFixes = dedupePRs ? filterDuplicateProposals(proposedRepairs, existingPRs, 'repair') : proposedRepairs;
+        const skippedRepairs = proposedRepairs.length - repairFixes.length;
+        console.log(`Found ${repairFixes.length} proposed repair tasks${skippedRepairs > 0 ? ` (${skippedRepairs} skipped as duplicates of existing janitor PRs)` : ''}.`);
         if (repairFixes.length > 0) {
             console.log("Planned Repair PRs:");
             repairFixes.forEach((fix, idx) => {
@@ -89,8 +111,10 @@ export async function main() {
         return;
     }
 
-    const fixes = await generateFixProposals(recentDiff);
-    console.log(`Found ${fixes.length} proposed atomic improvements.`);
+    const proposedFixes = await generateFixProposals(recentDiff, process.cwd(), existingPRContext);
+    const fixes = dedupePRs ? filterDuplicateProposals(proposedFixes, existingPRs, 'refactor') : proposedFixes;
+    const skippedFixes = proposedFixes.length - fixes.length;
+    console.log(`Found ${fixes.length} proposed atomic improvements${skippedFixes > 0 ? ` (${skippedFixes} skipped as duplicates of existing janitor PRs)` : ''}.`);
     if (fixes.length > 0) {
         console.log("Planned PRs:");
         fixes.forEach((fix, idx) => {

@@ -11,6 +11,7 @@ import {
     FileChange,
     FixProposal,
     getProposalChanges,
+    JANITOR_BRANCH_PREFIX,
 } from './config.js';
 import { runVerification, logFailedDiff, cleanupWorktree } from './git.js';
 import { validateFixIntegrity } from './integrity.js';
@@ -88,7 +89,7 @@ export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir:
 
 export async function processFixWorktree(fix: FixProposal, defaultBranch: string, modeType: 'repair' | 'refactor' = 'refactor'): Promise<boolean> {
     const timestamp = Date.now();
-    const branchName = `janitor/${fix.slug}-${timestamp}`;
+    const branchName = `${JANITOR_BRANCH_PREFIX}${fix.slug}-${timestamp}`;
     const worktreePath = path.resolve(process.cwd(), `.janitor-worktree-${fix.slug}-${timestamp}`);
 
     try {
@@ -175,7 +176,7 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
 
 export async function processFixSequential(fix: FixProposal, defaultBranch: string, modeType: 'repair' | 'refactor' = 'refactor'): Promise<boolean> {
     const timestamp = Date.now();
-    const branchName = `janitor/${fix.slug}-${timestamp}`;
+    const branchName = `${JANITOR_BRANCH_PREFIX}${fix.slug}-${timestamp}`;
     const workDir = process.cwd();
 
     console.log(`\n--- Processing Fix (Sequential): ${fix.title} ---`);

@@ -12,6 +12,7 @@
 - 🧹 **Non-Blocking Sweeps:** Runs on your schedule (`cron`) or on demand (`workflow_dispatch`) without slowing down daytime PR reviews.
 - ⚡ **Auto-Detected Runtimes & Native Caching:** Automatically detects project ecosystems (Go, Node.js, Rust, Python, Android Kotlin / Gradle), provisions runtimes, and enables native build caching across workflow runs.
 - 🔧 **Automatic Repair Mode:** Runs an initial health check on main. If tests or linters are failing, Janitor automatically switches to **Repair Mode** (`🚨`) to generate minimal fix PRs for the broken build/tests before attempting refactors.
+- 🔁 **PR Deduplication:** Before proposing anything, Janitor checks the pull requests it has already opened. A repair sweep re-observes the same red `main` every night until the fix is merged, so proposals already covered by an open Janitor PR — or by one a human closed without merging — are skipped instead of re-opened as a fresh PR.
 - 📍 **Persistent History Tracking & Uncached Fallback:** Uses a cached state cursor (`.janitor-state.json`) to track the last analyzed commit hash across runs. On uncached initial runs (or new repositories), Code Janitor automatically looks back across either the last 24 hours or 10 commits—whichever provides more commits to analyze.
 - 🎯 **Atomic PRs:** Splits refactors and fixes into tiny, single-responsibility PRs (<100 lines) so reviews take 30 seconds.
 - 🛡️ **Zero Broken PR Guarantee:** Runs your native linters and test commands (`go test`, `cargo test`, `npm test`, `pytest`, `./gradlew test`) locally inside the runner. If a change breaks compilation or a test, **it is automatically discarded before a PR is opened**.
@@ -156,6 +157,7 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 | `janitor_mode` | Execution mode (`auto`, `repair-only`, `refactor-only`) | `'auto'` |
 | `enable_llm_tools` | Allow LLM to call workspace tools (`read_file`, `list_directory`, `run_command`) | `true` |
 | `max_llm_tool_steps` | Maximum tool call steps per LLM request | `5` |
+| `dedupe_prs` | Skip proposals already covered by an existing (open, or closed-unmerged) Code Janitor PR | `true` |
 | `go_version` | Go version (e.g. `"1.22"`, `"stable"`). Reads `go.mod` if empty | `''` |
 | `node_version` | Node.js version (e.g. `"18"`, `"20"`, `"22"`, `"24"`). Reads `.nvmrc`, `.node-version`, or `package.json` if empty (fallback `"24"`) | `''` |
 | `python_version` | Python version (e.g. `"3.10"`, `"3.11"`, `"3.12"`). Reads `pyproject.toml` or `.python-version` if empty (fallback `"3.11"`) | `''` |
@@ -164,6 +166,28 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 | `gemini_api_key` | Gemini API key (can also be supplied via `GEMINI_API_KEY` env var) | `''` |
 | `anthropic_api_key` | Anthropic API key (can also be supplied via `ANTHROPIC_API_KEY` env var) | `''` |
 | `openai_api_key` | OpenAI API key (can also be supplied via `OPENAI_API_KEY` env var) | `''` |
+
+---
+
+## 🔁 PR Deduplication
+
+The janitor runs on a schedule, but its PRs are merged by humans on their own time. A failing `main` therefore looks identical on every run until the pending repair lands — so without deduplication, repair mode proposes the same fix and opens a brand-new PR every single night.
+
+When `dedupe_prs` is `true` (default), each run first lists the pull requests on branches the janitor itself created (`janitor/<slug>-<timestamp>`) via the GitHub CLI:
+
+- **Open PRs** — the fix is already submitted and awaiting review.
+- **Closed, unmerged PRs** — a human looked at that fix and rejected it.
+- **Merged PRs are deliberately ignored.** That change already landed; if it didn't hold, the janitor should be free to try again.
+
+Those PRs are used twice. They are passed to the model as context ("do not re-propose these"), and any proposal that comes back anyway is filtered out before a branch is created, matched on:
+
+1. **Slug** — the branch the janitor would mint is effectively the same one.
+2. **Normalized title** — emoji and `fix:`/`refactor:` prefixes are stripped before comparing.
+3. **Identical set of touched files** — **repair mode only.** A repair run re-reads the same failure logs and lands on the same files; two refactor proposals touching one file, by contrast, are routinely genuinely different improvements.
+
+Duplicates within a single batch are collapsed too, so one run can't race two near-identical branches into existence. Every skip is logged (`⏭️ Skipping proposal 'fix-nil-deref' — already open as #42`).
+
+Deduplication **fails open**: if `gh` is unavailable or unauthenticated, the run logs a warning and proceeds without it rather than aborting the sweep. Set `dedupe_prs: false` to disable it entirely.
 
 ---
 

@@ -26,8 +26,14 @@ export const isDraft = process.env.DRAFT_PR === 'true';
 export const maxConcurrency = parseInt(process.env.MAX_CONCURRENCY || '3', 10);
 export const enableLlmTools = process.env.ENABLE_LLM_TOOLS !== 'false';
 export const maxLlmToolSteps = parseInt(process.env.MAX_LLM_TOOL_STEPS || '5', 10);
+// Deduplication is on unless explicitly disabled: without it a nightly repair sweep
+// re-observes the same red main branch and opens a fresh PR for the same fix every run.
+export const dedupePRs = process.env.DEDUPE_PRS !== 'false';
 
 export const STATE_FILE = '.janitor-state.json';
+
+/** Prefix for every branch the janitor creates; also how its own PRs are recognized later. */
+export const JANITOR_BRANCH_PREFIX = 'janitor/';
 
 export interface JanitorState {
     lastAnalyzedCommit: string;

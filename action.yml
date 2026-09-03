@@ -70,6 +70,10 @@ inputs:
     description: 'Maximum tool call steps per LLM request'
     required: false
     default: '5'
+  dedupe_prs:
+    description: 'Skip proposals already covered by an existing (open, or closed-unmerged) Code Janitor PR'
+    required: false
+    default: 'true'
   go_version:
     description: 'Go version (e.g. "1.22", "oldstable", "stable"). If empty, reads from go.mod.'
     required: false
@@ -220,6 +224,7 @@ runs:
         JANITOR_MODE: ${{ inputs.janitor_mode }}
         ENABLE_LLM_TOOLS: ${{ inputs.enable_llm_tools }}
         MAX_LLM_TOOL_STEPS: ${{ inputs.max_llm_tool_steps }}
+        DEDUPE_PRS: ${{ inputs.dedupe_prs }}
         GEMINI_API_KEY: ${{ inputs.gemini_api_key || env.GEMINI_API_KEY }}
         ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key || env.ANTHROPIC_API_KEY }}
         OPENAI_API_KEY: ${{ inputs.openai_api_key || env.OPENAI_API_KEY }}
