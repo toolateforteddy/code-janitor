@@ -17,6 +17,7 @@
 - 🧪 **Convention-Aware Test Generation:** Before writing tests, Janitor feeds the existing sibling test files for each changed source file into the model's context (counterpart tests first, then same-directory tests, mirrored JVM `src/test` roots, and finally any test file in the repo). Generated tests reuse the project's real test framework, imports, and helpers instead of inventing ones that fail to compile.
 - 🎯 **Atomic PRs:** Splits refactors and fixes into tiny, single-responsibility PRs (<100 lines) so reviews take 30 seconds.
 - 🛡️ **Zero Broken PR Guarantee:** Runs your native linters and test commands (`go test`, `cargo test`, `npm test`, `pytest`, `./gradlew test`) locally inside the runner. If a change breaks compilation or a test, **it is automatically discarded before a PR is opened**.
+- 📊 **Job Summary for Every Run:** Each run publishes a GitHub Actions job summary (`$GITHUB_STEP_SUMMARY`) — sweep type, branch health, proposal counts, and the outcome of every proposed fix with a link to the PR it opened — so you can see what a nightly sweep did without opening the logs.
 - 💸 **Near-Zero Running Cost ($0–$0.05/mo):** Powered by fast, affordable models like **Gemini 3.6 Flash**. Includes early exit logic if no recent code changes exist.
 
 ---
@@ -215,6 +216,28 @@ Those PRs are used twice. They are passed to the model as context ("do not re-pr
 Duplicates within a single batch are collapsed too, so one run can't race two near-identical branches into existence. Every skip is logged (`⏭️ Skipping proposal 'fix-nil-deref' — already open as #42`).
 
 Deduplication **fails open**: if `gh` is unavailable or unauthenticated, the run logs a warning and proceeds without it rather than aborting the sweep. Set `dedupe_prs: false` to disable it entirely.
+
+---
+
+## 📊 Job Summary
+
+Every run writes a markdown report to `$GITHUB_STEP_SUMMARY`, rendered at the top of the workflow run page in the Actions UI. It answers "what did last night's sweep actually do?" without scrolling through step logs:
+
+| Field | Value |
+| --- | --- |
+| Mode | `auto` |
+| Sweep | 🧹 Refactor |
+| Provider / model | `google` / `gemini-3.6-flash` |
+| Main branch health | ✅ Green |
+| Proposals | 3 |
+| Skipped as duplicates | 2 |
+| Existing janitor PRs | 5 |
+| PRs opened | 1 |
+| Duration | 1m 32s |
+
+Below the run metadata, each proposal gets a row with its outcome — `✅ PR opened` (linked to the pull request), `❌ Verification failed` (with the step that failed: lint, test, or integrity), `⚠️ No changes produced`, or `💥 Error` — followed by any notes explaining an early exit, such as a failing `main` under `refactor-only` or an empty diff window.
+
+The summary is written in a `finally` block, so runs that stop early or fail outright still report why. It requires no configuration: `$GITHUB_STEP_SUMMARY` is provided by the Actions runner, and outside Actions (local runs) writing it is a no-op.
 
 ---
 
