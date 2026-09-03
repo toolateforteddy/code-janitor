@@ -1,4 +1,4 @@
-import { generateObject, generateText, tool, Output } from 'ai';
+import { generateObject, generateText, tool, Output, stepCountIs } from 'ai';
 import { z } from 'zod';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -67,7 +67,7 @@ export function createJanitorTools(workDir: string = process.cwd()) {
     return {
         read_file: tool({
             description: 'Read the contents of a file relative to the project workspace root',
-            parameters: z.object({
+            inputSchema: z.object({
                 filePath: z.string().describe('Relative path to the file to read'),
             }),
             execute: async ({ filePath }) => {
@@ -103,7 +103,7 @@ export function createJanitorTools(workDir: string = process.cwd()) {
         }),
         list_directory: tool({
             description: 'List files and directories within a workspace folder (defaults to workspace root). Maximum 100 entries.',
-            parameters: z.object({
+            inputSchema: z.object({
                 dirPath: z.string().optional().describe('Relative directory path to list (defaults to root ".")'),
             }),
             execute: async ({ dirPath }) => {
@@ -145,7 +145,7 @@ export function createJanitorTools(workDir: string = process.cwd()) {
         }),
         run_command: tool({
             description: 'Run small, safe read-only shell commands in the workspace (e.g. ls, dir, find, git status, git log, cat, grep). Output max 10,000 characters.',
-            parameters: z.object({
+            inputSchema: z.object({
                 command: z.string().describe('Command string to execute'),
             }),
             execute: async ({ command }) => {
@@ -169,10 +169,10 @@ export function createJanitorTools(workDir: string = process.cwd()) {
 }
 
 /**
- * Generates a schema-typed object from the model. `generateObject` (AI SDK v4) does not
- * accept `tools`/`maxSteps`, so when workspace tools are enabled we route through
- * `generateText` with `experimental_output` instead, letting the model call tools across
- * multiple steps before producing its final structured response.
+ * Generates a schema-typed object from the model. `generateObject` does not accept
+ * `tools`, so when workspace tools are enabled we route through `generateText` with
+ * a structured `output` spec instead, letting the model call tools across multiple
+ * steps (bounded by `stopWhen: stepCountIs(...)`) before producing its final response.
  */
 async function generateStructuredWithTools<T extends z.ZodTypeAny>(
     schema: T,
@@ -184,21 +184,22 @@ async function generateStructuredWithTools<T extends z.ZodTypeAny>(
         const result = await generateText({
             model: getModel(provider, modelName),
             tools,
-            maxSteps: maxLlmToolSteps,
+            stopWhen: stepCountIs(maxLlmToolSteps),
             system,
             prompt,
-            experimental_output: Output.object({ schema }),
+            output: Output.object<z.infer<T>>({ schema }),
         });
-        return result.experimental_output;
+        return result.output;
     }
 
     const result = await generateObject({
         model: getModel(provider, modelName),
         schema,
+        output: 'object',
         system,
         prompt,
     });
-    return result.object;
+    return result.object as z.infer<T>;
 }
 
 
