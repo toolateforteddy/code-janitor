@@ -7,6 +7,7 @@ import {
     ensureTrailingNewline,
     fixesResponseSchema,
     maxPRs,
+    parseNonNegativeInt,
     parseLineBudget,
 } from './config.js';
 
@@ -111,6 +112,23 @@ describe('config module test suite', () => {
             assert.equal(changes.length, 1);
             assert.equal(changes[0].filePath, 'src/lib.rs');
             assert.equal(changes[0].updatedContent, 'pub fn lib() {}\n');
+        });
+    });
+
+    describe('parseNonNegativeInt()', () => {
+        it('accepts zero so retrying can be turned off entirely', () => {
+            assert.equal(parseNonNegativeInt('0', 4), 0);
+        });
+
+        it('parses positive values', () => {
+            assert.equal(parseNonNegativeInt('7', 4), 7);
+        });
+
+        it('falls back on unset, non-numeric, and negative values', () => {
+            assert.equal(parseNonNegativeInt(undefined, 4), 4);
+            assert.equal(parseNonNegativeInt('', 4), 4);
+            assert.equal(parseNonNegativeInt('lots', 4), 4);
+            assert.equal(parseNonNegativeInt('-1', 4), 4);
         });
     });
 

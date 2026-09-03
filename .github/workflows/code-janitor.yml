@@ -108,6 +108,21 @@ on:
         type: number
         required: false
         default: 5
+      llm_max_retries:
+        description: 'Retries after a transient LLM API failure (429, 5xx, dropped connection, unparseable response). 0 disables retrying.'
+        type: number
+        required: false
+        default: 4
+      llm_retry_base_delay_ms:
+        description: 'Base delay in milliseconds for exponential backoff between LLM retries'
+        type: number
+        required: false
+        default: 1000
+      llm_retry_max_delay_ms:
+        description: 'Maximum delay in milliseconds between LLM retries'
+        type: number
+        required: false
+        default: 30000
       dedupe_prs:
         description: 'Skip proposals already covered by an existing (open, or closed-unmerged) Code Janitor PR'
         type: boolean
@@ -186,6 +201,9 @@ jobs:
           janitor_mode: ${{ inputs.janitor_mode }}
           enable_llm_tools: ${{ inputs.enable_llm_tools }}
           max_llm_tool_steps: ${{ inputs.max_llm_tool_steps }}
+          llm_max_retries: ${{ inputs.llm_max_retries }}
+          llm_retry_base_delay_ms: ${{ inputs.llm_retry_base_delay_ms }}
+          llm_retry_max_delay_ms: ${{ inputs.llm_retry_max_delay_ms }}
           dedupe_prs: ${{ inputs.dedupe_prs }}
           go_version: ${{ inputs.go_version }}
           node_version: ${{ inputs.node_version }}

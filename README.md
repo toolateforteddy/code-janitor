@@ -164,6 +164,9 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 | `janitor_mode` | Execution mode (`auto`, `repair-only`, `refactor-only`) | `'auto'` |
 | `enable_llm_tools` | Allow LLM to call workspace tools (`read_file`, `list_directory`, `run_command`) | `true` |
 | `max_llm_tool_steps` | Maximum tool call steps per LLM request | `5` |
+| `llm_max_retries` | Retries after a transient LLM API failure (429, 5xx, dropped connection, unparseable response). `0` disables retrying | `4` |
+| `llm_retry_base_delay_ms` | Base delay in ms for exponential backoff between LLM retries | `1000` |
+| `llm_retry_max_delay_ms` | Maximum delay in ms between LLM retries | `30000` |
 | `dedupe_prs` | Skip proposals already covered by an existing (open, or closed-unmerged) Code Janitor PR | `true` |
 | `go_version` | Go version (e.g. `"1.22"`, `"stable"`). Reads `go.mod` if empty | `''` |
 | `node_version` | Node.js version (e.g. `"18"`, `"20"`, `"22"`, `"24"`). Reads `.nvmrc`, `.node-version`, or `package.json` if empty (fallback `"24"`) | `''` |

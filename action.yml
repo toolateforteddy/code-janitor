@@ -90,6 +90,18 @@ inputs:
     description: 'Maximum tool call steps per LLM request'
     required: false
     default: '5'
+  llm_max_retries:
+    description: 'Retries after a transient LLM API failure (429, 5xx, dropped connection, unparseable response). 0 disables retrying.'
+    required: false
+    default: '4'
+  llm_retry_base_delay_ms:
+    description: 'Base delay in milliseconds for exponential backoff between LLM retries'
+    required: false
+    default: '1000'
+  llm_retry_max_delay_ms:
+    description: 'Maximum delay in milliseconds between LLM retries'
+    required: false
+    default: '30000'
   dedupe_prs:
     description: 'Skip proposals already covered by an existing (open, or closed-unmerged) Code Janitor PR'
     required: false
@@ -249,6 +261,9 @@ runs:
         JANITOR_MODE: ${{ inputs.janitor_mode }}
         ENABLE_LLM_TOOLS: ${{ inputs.enable_llm_tools }}
         MAX_LLM_TOOL_STEPS: ${{ inputs.max_llm_tool_steps }}
+        LLM_MAX_RETRIES: ${{ inputs.llm_max_retries }}
+        LLM_RETRY_BASE_DELAY_MS: ${{ inputs.llm_retry_base_delay_ms }}
+        LLM_RETRY_MAX_DELAY_MS: ${{ inputs.llm_retry_max_delay_ms }}
         DEDUPE_PRS: ${{ inputs.dedupe_prs }}
         GEMINI_API_KEY: ${{ inputs.gemini_api_key || env.GEMINI_API_KEY }}
         ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key || env.ANTHROPIC_API_KEY }}

@@ -20,8 +20,12 @@ import {
     ensureTrailingNewline,
     enableLlmTools,
     maxLlmToolSteps,
+    llmMaxRetries,
+    llmRetryBaseDelayMs,
+    llmRetryMaxDelayMs,
 } from './config.js';
 import { runVerification, logFailedDiff, runCmd } from './git.js';
+import { withLlmRetry } from './retry.js';
 import { isTestFilePath } from './paths.js';
 
 export function isPathInsideWorkspace(workDir: string, targetPath: string): boolean {
@@ -182,26 +186,42 @@ async function generateStructuredWithTools<T extends z.ZodTypeAny>(
     prompt: string,
     tools: ReturnType<typeof createJanitorTools>
 ): Promise<z.infer<T>> {
+    // `maxRetries: 0` disables the SDK's own retry loop so that retrying happens in
+    // exactly one place: `withLlmRetry`, which also covers unparseable structured
+    // output and logs each attempt.
+    const retryOptions = {
+        maxRetries: llmMaxRetries,
+        baseDelayMs: llmRetryBaseDelayMs,
+        maxDelayMs: llmRetryMaxDelayMs,
+        label: `${provider}/${modelName} request`,
+    };
+
     if (tools) {
-        const result = await generateText({
-            model: getModel(provider, modelName),
-            tools,
-            stopWhen: stepCountIs(maxLlmToolSteps),
-            system,
-            prompt,
-            output: Output.object<z.infer<T>>({ schema }),
-        });
-        return result.output;
+        return withLlmRetry(async () => {
+            const result = await generateText({
+                model: getModel(provider, modelName),
+                tools,
+                stopWhen: stepCountIs(maxLlmToolSteps),
+                system,
+                prompt,
+                maxRetries: 0,
+                output: Output.object<z.infer<T>>({ schema }),
+            });
+            return result.output;
+        }, retryOptions);
     }
 
-    const result = await generateObject({
-        model: getModel(provider, modelName),
-        schema,
-        output: 'object',
-        system,
-        prompt,
-    });
-    return result.object as z.infer<T>;
+    return withLlmRetry(async () => {
+        const result = await generateObject({
+            model: getModel(provider, modelName),
+            schema,
+            output: 'object',
+            system,
+            prompt,
+            maxRetries: 0,
+        });
+        return result.object as z.infer<T>;
+    }, retryOptions);
 }
 
 
