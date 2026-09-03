@@ -26,6 +26,7 @@ import {
 } from './config.js';
 import { runVerification, logFailedDiff, runCmd } from './git.js';
 import { withLlmRetry } from './retry.js';
+import { isTestFilePath } from './paths.js';
 
 export function isPathInsideWorkspace(workDir: string, targetPath: string): boolean {
     const absWorkDir = path.resolve(workDir).toLowerCase();
@@ -394,40 +395,9 @@ export function getFullFileContexts(filePaths: string[], workDir: string = proce
     return contexts.join('\n\n');
 }
 
-const TEST_BASENAME_PATTERNS: RegExp[] = [
-    /_test\.(go|py|rs|ts|tsx|js|jsx|mjs|cjs|dart)$/i,
-    /^test_.+\.(py|rs)$/i,
-    /\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs)$/i,
-    /(Test|Tests|Spec|Specs)\.(java|kt|kts|cs|scala|swift)$/,
-    /_spec\.rb$/i,
-];
-
-const TEST_DIR_NAMES = new Set(['test', 'tests', '__tests__', 'spec', 'specs', 'testing']);
-
-const SOURCE_EXTENSIONS = new Set([
-    '.go', '.py', '.rs', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
-    '.java', '.kt', '.kts', '.cs', '.scala', '.swift', '.rb', '.dart',
-]);
-
-/**
- * Recognizes test files across the ecosystems Code Janitor supports, either by
- * language naming convention (`foo_test.go`, `foo.test.ts`, `FooTest.kt`) or by
- * living inside a conventional test directory (`tests/`, `__tests__/`, `src/test/`).
- */
-export function isTestFilePath(filePath: string): boolean {
-    if (!filePath) return false;
-    const normalized = filePath.replace(/\\/g, '/');
-    const basename = path.posix.basename(normalized);
-    if (TEST_BASENAME_PATTERNS.some(pattern => pattern.test(basename))) {
-        return true;
-    }
-    const ext = path.posix.extname(basename).toLowerCase();
-    if (!SOURCE_EXTENSIONS.has(ext)) return false;
-    return normalized
-        .split('/')
-        .slice(0, -1)
-        .some(segment => TEST_DIR_NAMES.has(segment.toLowerCase()));
-}
+// isTestFilePath lives in paths.ts so integrity/line-budget checks can reuse it
+// without importing this module; re-exported here for existing callers.
+export { isTestFilePath } from './paths.js';
 
 function listTestFilesInDir(workDir: string, relativeDir: string): string[] {
     const absDir = path.resolve(workDir, relativeDir);
@@ -608,7 +578,7 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
     RULES:
     1. Fix ONLY what is necessary to resolve the build or test failures.
     2. Do NOT introduce new features or unnecessary refactoring.
-    3. SEPARATE LINE BUDGETS: Keep changes to non-test (production) files under ~${maxLineDiff} total diff lines. Test file changes have their own separate budget of ~${maxTestLineDiff} total diff lines and do NOT count against the production budget, so never thin out or drop a needed test to stay within the production budget.
+    3. SEPARATE LINE BUDGETS (ENFORCED IN CODE): Keep changes to non-test (production) files at or under ${maxLineDiff} total diff lines (added + removed, summed across all production files in the proposal). Test file changes have their own separate budget of ${maxTestLineDiff} total diff lines and do NOT count against the production budget, so never thin out or drop a needed test to stay within the production budget. These caps are measured against your actual proposed diff and a proposal that exceeds either one is rejected, so split larger work into smaller atomic proposals instead of overshooting.
     4. MULTI-FILE PROPOSALS SUPPORTED: Include all modified files in the 'changes' array. You can modify up to 5 related files in a single proposal (e.g., fixing a function signature and updating callers/test files).
     5. FULL FILE CONTENT MANDATE (DO NOT TRUNCATE): 'updatedContent' MUST contain the COMPLETE, exact file content from line 1 to the end. NEVER abbreviate, summarize, or omit unedited code with comments like '// ...' or skip existing top-level functions, structs, classes, imports, macros, or types. Omitting top-level declarations causes immediate integrity check failures and invalidates the proposal.
     6. PRESERVE API CONTRACTS: If you modify a function signature, update all relevant caller sites across modified files in 'changes'.
@@ -663,7 +633,7 @@ export async function generateFixProposals(diff: string, workDir: string = proce
     
     RULES:
     1. Each fix MUST be completely self-contained and atomic.
-    2. SEPARATE LINE BUDGETS: Do NOT propose changes to non-test (production) files larger than ~${maxLineDiff} total diff lines. Test files (e.g. '*_test.go', '*.test.ts', 'src/test/**', 'tests/**', or whatever this project uses) have their own separate budget of ~${maxTestLineDiff} total diff lines and do NOT count against the production budget, so never thin out or drop a needed test to stay within the production budget.
+    2. SEPARATE LINE BUDGETS (ENFORCED IN CODE): Do NOT propose changes to non-test (production) files larger than ${maxLineDiff} total diff lines (added + removed, summed across all production files in the proposal). Test files (e.g. '*_test.go', '*.test.ts', 'src/test/**', 'tests/**', or whatever this project uses) have their own separate budget of ${maxTestLineDiff} total diff lines and do NOT count against the production budget, so never thin out or drop a needed test to stay within the production budget. These caps are measured against your actual proposed diff and a proposal that exceeds either one is rejected, so split larger work into smaller atomic proposals instead of overshooting.
     3. MULTI-FILE PROPOSALS SUPPORTED: Each proposal specifies a 'changes' array containing 1 to 5 file modifications. You can pair a production file refactor with a separate unit test file or update caller sites when modifying a signature.
     4. ${enableTestGen ? 'Feel free to generate unit tests for uncovered paths using language-idiomatic test patterns.' : 'Do NOT generate test files or test classes; focus only on code refactoring.'}
     5. Focus on idiomatic improvements, resource cleanup, performance, or edge-case bug fixes. DO NOT propose redundant refactorings for logic or validation that already exists in the file.
@@ -740,7 +710,8 @@ export async function attemptAutoFix(
     6. TRAILING NEWLINE MANDATE: 'updatedContent' MUST ALWAYS end with a trailing newline character (\\n).
     7. RESPECT AGENT INSTRUCTIONS: Respect any project agent instructions or repository rules provided in AGENTS.md, .agents files, or related agent configurations.
     8. MATCH EXISTING TEST CONVENTIONS: When the failure is in a test file, mirror the existing test files provided in the context exactly: same test framework and runner, same import/package/module declarations, and the same helper and fixture utilities. Compilation failures in tests are usually caused by imports, helpers, or assertion APIs that do not exist in this project.
-    9. WORKSPACE TOOLS: You have access to interactive workspace tools ('read_file', 'list_directory', 'run_command'). Use them if you need additional workspace context.
+    9. RESPECT LINE BUDGETS (ENFORCED IN CODE): The revised files must stay within ${maxLineDiff} total diff lines across non-test (production) files and ${maxTestLineDiff} total diff lines across test files, counted against the original contents. When the failure above is a line budget violation, shrink the change itself (narrow the refactor, keep untouched regions byte-identical) rather than reverting the file or deleting tests.
+    10. WORKSPACE TOOLS: You have access to interactive workspace tools ('read_file', 'list_directory', 'run_command'). Use them if you need additional workspace context.
 `;
     try {
         const fileContentsText = currentChanges.map(c => {

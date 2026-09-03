@@ -17,6 +17,7 @@
 - 🧪 **Convention-Aware Test Generation:** Before writing tests, Janitor feeds the existing sibling test files for each changed source file into the model's context (counterpart tests first, then same-directory tests, mirrored JVM `src/test` roots, and finally any test file in the repo). Generated tests reuse the project's real test framework, imports, and helpers instead of inventing ones that fail to compile.
 - 🎯 **Atomic PRs:** Splits refactors and fixes into tiny, single-responsibility PRs (<100 lines) so reviews take 30 seconds.
 - 🛡️ **Zero Broken PR Guarantee:** Runs your native linters and test commands (`go test`, `cargo test`, `npm test`, `pytest`, `./gradlew test`) locally inside the runner. If a change breaks compilation or a test, **it is automatically discarded before a PR is opened**.
+- 📊 **Job Summary for Every Run:** Each run publishes a GitHub Actions job summary (`$GITHUB_STEP_SUMMARY`) — sweep type, branch health, proposal counts, and the outcome of every proposed fix with a link to the PR it opened — so you can see what a nightly sweep did without opening the logs.
 - 💸 **Near-Zero Running Cost ($0–$0.05/mo):** Powered by fast, affordable models like **Gemini 3.6 Flash**. Includes early exit logic if no recent code changes exist.
 
 ---
@@ -156,6 +157,7 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 | `max_prs_per_run` | Maximum atomic PRs to open in one run | `3` |
 | `max_line_diff` | Hard cap on total diff lines to non-test files per atomic PR | `100` |
 | `max_test_line_diff` | Hard cap on total diff lines to test files per atomic PR (counted separately from `max_line_diff`) | `200` |
+| `enforce_line_budget` | Reject proposals whose measured diff exceeds the caps above (set `false` for prompt-only guidance) | `true` |
 | `max_concurrency` | Maximum number of fixes to process in parallel (via git worktrees) per run | `3` |
 | `reviewers` | Comma-separated GitHub handles or teams to request review | `''` |
 | `draft_pr` | Open PRs in Draft state | `true` |
@@ -221,6 +223,28 @@ Deduplication **fails open**: if `gh` is unavailable or unauthenticated, the run
 
 ---
 
+## 📊 Job Summary
+
+Every run writes a markdown report to `$GITHUB_STEP_SUMMARY`, rendered at the top of the workflow run page in the Actions UI. It answers "what did last night's sweep actually do?" without scrolling through step logs:
+
+| Field | Value |
+| --- | --- |
+| Mode | `auto` |
+| Sweep | 🧹 Refactor |
+| Provider / model | `google` / `gemini-3.6-flash` |
+| Main branch health | ✅ Green |
+| Proposals | 3 |
+| Skipped as duplicates | 2 |
+| Existing janitor PRs | 5 |
+| PRs opened | 1 |
+| Duration | 1m 32s |
+
+Below the run metadata, each proposal gets a row with its outcome — `✅ PR opened` (linked to the pull request), `❌ Verification failed` (with the step that failed: lint, test, or integrity), `⚠️ No changes produced`, or `💥 Error` — followed by any notes explaining an early exit, such as a failing `main` under `refactor-only` or an empty diff window.
+
+The summary is written in a `finally` block, so runs that stop early or fail outright still report why. It requires no configuration: `$GITHUB_STEP_SUMMARY` is provided by the Actions runner, and outside Actions (local runs) writing it is a no-op.
+
+---
+
 ## 🧰 LLM Workspace Tools & Safety Limits
 
 When `enable_llm_tools` is set to `true` (default), the LLM can dynamically inspect your workspace using Vercel AI SDK function calling before outputting repair or refactor proposals.
@@ -240,3 +264,16 @@ To prevent context overflow and control token costs, output size caps are strict
 - **Directory Entry Limit (`list_directory`):** Truncated at **100 entries**.
 - **Path Traversal Protection:** All file paths are strictly validated (`isPathInsideWorkspace`) to prevent access outside the repository root.
 - **Command Whitelist & Chaining Protection:** Destructive commands (`rm`, `mv`, `git push`, etc.) and shell operators (redirection `>`, command chaining `;`) are blocked.
+
+---
+
+## 📏 Line Budget Enforcement
+
+`max_line_diff` and `max_test_line_diff` are stated in the model prompt *and* enforced in code — a model is free to ignore prompt guidance, so the proposal is measured before a PR is opened.
+
+- Each proposal's diff is counted per file as **added + removed lines** against the file's pre-change content (a new file counts every line as added), using the same minimal line edit script `git diff --numstat` reports.
+- Files are classified by path: anything matching a language test convention (`*_test.go`, `*.test.ts`, `FooTest.kt`, `*_spec.rb`) or living under a test directory (`tests/`, `__tests__/`, `src/test/`) counts against `max_test_line_diff`; everything else counts against `max_line_diff`. The two budgets are independent, so a large test never squeezes out the production change (or vice versa).
+- Every run logs its usage: `📏 Line budget for 'fix-nil-deref': production 42/100 diff lines, tests 88/200 diff lines`.
+- An over-budget proposal fails validation alongside the other integrity checks. The failure reason (with the measured counts and offending files) is fed to the auto-fix retry, which gets one chance to shrink the change; if it still exceeds the budget, the branch is discarded and no PR is opened.
+
+Set `enforce_line_budget: false` to fall back to prompt-only guidance.
