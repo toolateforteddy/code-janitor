@@ -23,6 +23,7 @@ import {
     generateFixProposals,
 } from './ai.js';
 import { processFixes } from './pr.js';
+import { installMissingDependencies } from './deps.js';
 import {
     fetchExistingJanitorPRs,
     filterDuplicateProposals,
@@ -52,6 +53,7 @@ export async function main() {
     // STEP 1: INITIAL HEALTH CHECK
     // -------------------------------------------------------------
     console.log("🔍 Checking main branch health...");
+    installMissingDependencies(process.cwd());
     const verifResult = runVerification(lintCmd, testCmd, testTimeoutMs);
 
     let isBroken = false;

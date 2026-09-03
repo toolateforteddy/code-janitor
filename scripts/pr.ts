@@ -14,6 +14,7 @@ import {
     JANITOR_BRANCH_PREFIX,
 } from './config.js';
 import { runVerification, logFailedDiff, cleanupWorktree } from './git.js';
+import { prepareWorktreeDependencies } from './deps.js';
 import { validateFixIntegrity } from './integrity.js';
 import { attemptAutoFix, findFileInWorkspaceByBasename, sanitizeRelativePath } from './ai.js';
 
@@ -90,7 +91,8 @@ export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir:
 export async function processFixWorktree(fix: FixProposal, defaultBranch: string, modeType: 'repair' | 'refactor' = 'refactor'): Promise<boolean> {
     const timestamp = Date.now();
     const branchName = `${JANITOR_BRANCH_PREFIX}${fix.slug}-${timestamp}`;
-    const worktreePath = path.resolve(process.cwd(), `.janitor-worktree-${fix.slug}-${timestamp}`);
+    const mainWorkspace = process.cwd();
+    const worktreePath = path.resolve(mainWorkspace, `.janitor-worktree-${fix.slug}-${timestamp}`);
 
     try {
         console.log(`\n--- Processing Fix (Worktree): ${fix.title} ---`);
@@ -133,6 +135,13 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
             return false;
         }
         console.log(`Working tree status (${fix.slug}):\n${statusPorcelain.split('\n').map(l => '  ' + l).join('\n')}`);
+
+        // A fresh worktree is a clean checkout: gitignored dependency trees
+        // (node_modules, .venv) don't come along, so lint/test would fail with
+        // "Cannot find module" no matter how good the proposal is. Do this only
+        // after the status check above so linked dep dirs can't be mistaken for
+        // proposal changes.
+        prepareWorktreeDependencies(mainWorkspace, worktreePath);
 
         const integrity = validateFixIntegrity(originalContents, changes);
         let verifResult: ReturnType<typeof runVerification>;
