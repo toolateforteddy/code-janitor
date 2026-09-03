@@ -222,11 +222,11 @@ Unresolved reference: ScribblePuzzleViewModel in ScribblePuzzleViewModel.kt: (12
                 const tools = createJanitorTools(tempDir);
                 assert.ok(tools && tools.read_file);
 
-                const res = await tools.read_file.execute({ filePath: 'sample.txt' }, { messages: [], toolCallId: '1' });
-                assert.match(res, /\[truncated 5000 characters\. Max file output limit is 40,000 characters\]/);
+                const res = await tools.read_file.execute({ filePath: 'sample.txt' }, { messages: [], toolCallId: '1', context: {} });
+                assert.match(res as string, /\[truncated 5000 characters\. Max file output limit is 40,000 characters\]/);
 
-                const denRes = await tools.read_file.execute({ filePath: '../outside.txt' }, { messages: [], toolCallId: '2' });
-                assert.match(denRes, /Access denied/);
+                const denRes = await tools.read_file.execute({ filePath: '../outside.txt' }, { messages: [], toolCallId: '2', context: {} });
+                assert.match(denRes as string, /Access denied/);
             } finally {
                 fs.rmSync(tempDir, { recursive: true, force: true });
             }
@@ -242,8 +242,8 @@ Unresolved reference: ScribblePuzzleViewModel in ScribblePuzzleViewModel.kt: (12
                 const tools = createJanitorTools(tempDir);
                 assert.ok(tools && tools.list_directory);
 
-                const res = await tools.list_directory.execute({ dirPath: '.' }, { messages: [], toolCallId: '3' });
-                assert.match(res, /Max directory output limit is 100 entries/);
+                const res = await tools.list_directory.execute({ dirPath: '.' }, { messages: [], toolCallId: '3', context: {} });
+                assert.match(res as string, /Max directory output limit is 100 entries/);
             } finally {
                 fs.rmSync(tempDir, { recursive: true, force: true });
             }
@@ -257,11 +257,11 @@ Unresolved reference: ScribblePuzzleViewModel in ScribblePuzzleViewModel.kt: (12
                 const tools = createJanitorTools(tempDir);
                 assert.ok(tools && tools.run_command);
 
-                const okRes = await tools.run_command.execute({ command: 'git status' }, { messages: [], toolCallId: '4' });
+                const okRes = await tools.run_command.execute({ command: 'git status' }, { messages: [], toolCallId: '4', context: {} });
                 assert.ok(typeof okRes === 'string');
 
-                const badRes = await tools.run_command.execute({ command: 'rm -rf .' }, { messages: [], toolCallId: '5' });
-                assert.match(badRes, /Command "rm -rf \." is not allowed/);
+                const badRes = await tools.run_command.execute({ command: 'rm -rf .' }, { messages: [], toolCallId: '5', context: {} });
+                assert.match(badRes as string, /Command "rm -rf \." is not allowed/);
             } finally {
                 fs.rmSync(tempDir, { recursive: true, force: true });
             }
