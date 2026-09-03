@@ -106,6 +106,10 @@ inputs:
     description: 'Skip proposals already covered by an existing (open, or closed-unmerged) Code Janitor PR'
     required: false
     default: 'true'
+  edit_format:
+    description: 'How the model expresses file changes: "edits" (targeted search/replace, default) or "rewrite" (full file content)'
+    required: false
+    default: 'edits'
   go_version:
     description: 'Go version (e.g. "1.22", "oldstable", "stable"). If empty, reads from go.mod.'
     required: false
@@ -265,6 +269,7 @@ runs:
         LLM_RETRY_BASE_DELAY_MS: ${{ inputs.llm_retry_base_delay_ms }}
         LLM_RETRY_MAX_DELAY_MS: ${{ inputs.llm_retry_max_delay_ms }}
         DEDUPE_PRS: ${{ inputs.dedupe_prs }}
+        EDIT_FORMAT: ${{ inputs.edit_format }}
         GEMINI_API_KEY: ${{ inputs.gemini_api_key || env.GEMINI_API_KEY }}
         ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key || env.ANTHROPIC_API_KEY }}
         OPENAI_API_KEY: ${{ inputs.openai_api_key || env.OPENAI_API_KEY }}

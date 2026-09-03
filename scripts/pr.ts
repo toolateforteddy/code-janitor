@@ -10,9 +10,12 @@ import {
     testTimeoutMs,
     FileChange,
     FixProposal,
+    ensureTrailingNewline,
     getProposalChanges,
+    isEditBasedChange,
     JANITOR_BRANCH_PREFIX,
 } from './config.js';
+import { applyEdits } from './edits.js';
 import { runVerification, logFailedDiff, cleanupWorktree } from './git.js';
 import { prepareWorktreeDependencies } from './deps.js';
 import { validateFixIntegrity } from './integrity.js';
@@ -24,6 +27,76 @@ import { recordFixResult } from './summary.js';
 export function extractPrUrl(output: string): string | undefined {
     const match = output.match(/https:\/\/\S*\/pull\/\d+/);
     return match ? match[0] : undefined;
+}
+
+/**
+ * Writes a proposal's file changes into `workDir` and records each file's pre-change
+ * content for the integrity check.
+ *
+ * A change arrives either as targeted search/replace edits (resolved here against the
+ * file already on disk) or as a full-file rewrite. Edits that do not apply are
+ * collected rather than thrown: the file is left untouched and the reason is fed back
+ * to the model by the auto-fix retry, which is exactly how a failed verification is
+ * handled.
+ */
+export function applyChangesToWorkspace(
+    workDir: string,
+    changes: FileChange[],
+    options: { remapPaths?: boolean; label?: string } = {}
+): { originalContents: Map<string, string>; editFailures: string[] } {
+    const originalContents = new Map<string, string>();
+    const editFailures: string[] = [];
+
+    const label = options.label ? ` for '${options.label}'` : '';
+    console.log(`📝 Applying ${changes.length} file change(s)${label}:`);
+    for (const change of changes) {
+        let cleanPath = sanitizeRelativePath(workDir, change.filePath) ?? '';
+        if (!cleanPath) {
+            throw new Error(`Refusing to write outside workspace: "${change.filePath}"`);
+        }
+        let absolutePath = path.resolve(workDir, cleanPath);
+
+        if (options.remapPaths && !fs.existsSync(absolutePath)) {
+            const baseName = path.basename(cleanPath);
+            const existingRelPath = findFileInWorkspaceByBasename(workDir, baseName);
+            if (existingRelPath && existingRelPath !== cleanPath) {
+                console.log(`   ℹ️ Remapped proposed path '${cleanPath}' to existing canonical path '${existingRelPath}'`);
+                cleanPath = existingRelPath;
+                absolutePath = path.resolve(workDir, cleanPath);
+            }
+        }
+
+        change.filePath = cleanPath;
+        fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+        const isNew = !fs.existsSync(absolutePath);
+        const orig = isNew ? '' : fs.readFileSync(absolutePath, 'utf-8');
+        originalContents.set(cleanPath, orig);
+
+        if (isEditBasedChange(change)) {
+            const applied = applyEdits(orig, change.edits!, cleanPath);
+            if (!applied.ok) {
+                console.warn(`   - ${cleanPath} [EDIT FAILED] ${applied.reason}`);
+                editFailures.push(applied.reason);
+                // Leave the file as-is and hand the model the current content on retry.
+                change.updatedContent = orig;
+                continue;
+            }
+            change.updatedContent = ensureTrailingNewline(applied.content);
+            console.log(`   - ${cleanPath} [EDITED x${change.edits!.length}] (${orig.length}b -> ${change.updatedContent.length}b)`);
+        } else if (change.updatedContent === undefined) {
+            const reason = `Edit Apply Failed: change for ${cleanPath} contained neither 'edits' nor 'updatedContent'.`;
+            console.warn(`   - ${cleanPath} [SKIPPED] ${reason}`);
+            editFailures.push(reason);
+            continue;
+        } else {
+            const isSame = orig === change.updatedContent;
+            console.log(`   - ${cleanPath} [${isNew ? 'NEW FILE' : 'MODIFIED'}] (${orig.length}b -> ${change.updatedContent.length}b${isSame ? ' ⚠️ UNCHANGED!' : ''})`);
+        }
+
+        fs.writeFileSync(absolutePath, change.updatedContent!, 'utf-8');
+    }
+
+    return { originalContents, editFailures };
 }
 
 export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir: string, modeType: 'repair' | 'refactor' = 'refactor', resolvedChanges?: FileChange[]): boolean {
@@ -113,38 +186,10 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
         execFileSync('git', ['worktree', 'add', '-b', branchName, worktreePath, defaultBranch]);
 
         const changes = getProposalChanges(fix);
-        const originalContents = new Map<string, string>();
-
-        console.log(`📝 Applying ${changes.length} file change(s) for '${fix.slug}':`);
-        for (const change of changes) {
-            let cleanPath = sanitizeRelativePath(worktreePath, change.filePath) ?? '';
-            if (!cleanPath) {
-                throw new Error(`Refusing to write outside workspace: "${change.filePath}"`);
-            }
-            let absolutePath = path.resolve(worktreePath, cleanPath);
-
-            if (!fs.existsSync(absolutePath)) {
-                const baseName = path.basename(cleanPath);
-                const existingRelPath = findFileInWorkspaceByBasename(worktreePath, baseName);
-                if (existingRelPath && existingRelPath !== cleanPath) {
-                    console.log(`   ℹ️ Remapped proposed path '${cleanPath}' to existing canonical path '${existingRelPath}'`);
-                    cleanPath = existingRelPath;
-                    absolutePath = path.resolve(worktreePath, cleanPath);
-                }
-            }
-
-            change.filePath = cleanPath;
-            fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
-            const isNew = !fs.existsSync(absolutePath);
-            const orig = isNew ? '' : fs.readFileSync(absolutePath, 'utf-8');
-            originalContents.set(cleanPath, orig);
-            fs.writeFileSync(absolutePath, change.updatedContent, 'utf-8');
-            const isSame = orig === change.updatedContent;
-            console.log(`   - ${cleanPath} [${isNew ? 'NEW FILE' : 'MODIFIED'}] (${orig.length}b -> ${change.updatedContent.length}b${isSame ? ' ⚠️ UNCHANGED!' : ''})`);
-        }
+        const { originalContents, editFailures } = applyChangesToWorkspace(worktreePath, changes, { remapPaths: true, label: fix.slug });
 
         const statusPorcelain = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf-8', cwd: worktreePath }).trim();
-        if (!statusPorcelain) {
+        if (!statusPorcelain && editFailures.length === 0) {
             console.warn(`⚠️ No file diffs or untracked changes detected for '${fix.slug}'. Skipping...`);
             recordFixResult({ slug: fix.slug, title: fix.title, modeType, outcome: 'no-changes', detail: 'Proposal left the worktree unchanged' });
             return false;
@@ -164,7 +209,10 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
         let verifResult: ReturnType<typeof runVerification>;
         let finalChanges = changes;
 
-        if (!integrity.valid) {
+        if (editFailures.length > 0) {
+            console.warn(`⚠️ ${editFailures.length} edit(s) could not be applied for '${fix.slug}'.`);
+            verifResult = { success: false, failureOutput: editFailures.join('\n'), failedStep: 'edit-apply' };
+        } else if (!integrity.valid) {
             console.warn(`⚠️ Integrity validation failed for '${fix.slug}': ${integrity.reason}`);
             verifResult = { success: false, failureOutput: integrity.reason, failedStep: 'integrity' };
         } else {
@@ -218,27 +266,10 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
 
     try {
         const changes = getProposalChanges(fix);
-        const originalContents = new Map<string, string>();
-
-        console.log(`📝 Applying ${changes.length} file change(s) for '${fix.slug}':`);
-        for (const change of changes) {
-            const cleanPath = sanitizeRelativePath(workDir, change.filePath);
-            if (!cleanPath) {
-                throw new Error(`Refusing to write outside workspace: "${change.filePath}"`);
-            }
-            change.filePath = cleanPath;
-            const absolutePath = path.resolve(workDir, cleanPath);
-            fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
-            const isNew = !fs.existsSync(absolutePath);
-            const orig = isNew ? '' : fs.readFileSync(absolutePath, 'utf-8');
-            originalContents.set(cleanPath, orig);
-            fs.writeFileSync(absolutePath, change.updatedContent, 'utf-8');
-            const isSame = orig === change.updatedContent;
-            console.log(`   - ${cleanPath} [${isNew ? 'NEW FILE' : 'MODIFIED'}] (${orig.length}b -> ${change.updatedContent.length}b${isSame ? ' ⚠️ UNCHANGED!' : ''})`);
-        }
+        const { originalContents, editFailures } = applyChangesToWorkspace(workDir, changes, { label: fix.slug });
 
         const statusPorcelain = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf-8', cwd: workDir }).trim();
-        if (!statusPorcelain) {
+        if (!statusPorcelain && editFailures.length === 0) {
             console.warn(`⚠️ No file diffs or untracked changes detected for '${fix.slug}'. Discarding branch...`);
             recordFixResult({ slug: fix.slug, title: fix.title, modeType, outcome: 'no-changes', detail: 'Proposal left the working tree unchanged' });
             try {
@@ -255,7 +286,10 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
         let verifResult: ReturnType<typeof runVerification>;
         let finalChanges = changes;
 
-        if (!integrity.valid) {
+        if (editFailures.length > 0) {
+            console.warn(`⚠️ ${editFailures.length} edit(s) could not be applied for '${fix.slug}'.`);
+            verifResult = { success: false, failureOutput: editFailures.join('\n'), failedStep: 'edit-apply' };
+        } else if (!integrity.valid) {
             console.warn(`⚠️ Integrity validation failed for '${fix.slug}': ${integrity.reason}`);
             verifResult = { success: false, failureOutput: integrity.reason, failedStep: 'integrity' };
         } else {

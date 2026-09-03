@@ -168,6 +168,7 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 | `llm_retry_base_delay_ms` | Base delay in ms for exponential backoff between LLM retries | `1000` |
 | `llm_retry_max_delay_ms` | Maximum delay in ms between LLM retries | `30000` |
 | `dedupe_prs` | Skip proposals already covered by an existing (open, or closed-unmerged) Code Janitor PR | `true` |
+| `edit_format` | How the model expresses file changes: `edits` (targeted search/replace) or `rewrite` (full file content) | `'edits'` |
 | `go_version` | Go version (e.g. `"1.22"`, `"stable"`). Reads `go.mod` if empty | `''` |
 | `node_version` | Node.js version (e.g. `"18"`, `"20"`, `"22"`, `"24"`). Reads `.nvmrc`, `.node-version`, or `package.json` if empty (fallback `"24"`) | `''` |
 | `python_version` | Python version (e.g. `"3.10"`, `"3.11"`, `"3.12"`). Reads `pyproject.toml` or `.python-version` if empty (fallback `"3.11"`) | `''` |
@@ -198,6 +199,42 @@ Python installs are never guessed — set `install_command` (e.g. `pip install -
     test_command: 'npm test'
     install_command: 'npm ci'   # optional; auto-detected from the lockfile when omitted
 ```
+
+---
+
+## ✂️ Change Format: Edits vs. Full Rewrites
+
+A proposal describes each touched file in one of two ways:
+
+```jsonc
+// edits — preferred for an existing file
+{
+  "filePath": "internal/store/store.go",
+  "edits": [
+    { "oldText": "\tif err != nil {\n\t\treturn err\n\t}", "newText": "\tif err != nil {\n\t\treturn fmt.Errorf(\"load: %w\", err)\n\t}" }
+  ]
+}
+
+// updatedContent — required for a new file
+{ "filePath": "internal/store/store_test.go", "updatedContent": "package store\n\n..." }
+```
+
+`oldText` must be copied verbatim from the file and match exactly one place in it (trailing whitespace and tab/space indent drift are tolerated; set `"replaceAll": true` when every occurrence should change). Edits are applied in order against the file on disk. An edit that matches nothing, or matches ambiguously, leaves the file untouched and hands the model a specific reason on the auto-fix retry — it never guesses.
+
+**Why this is the default.** A full-file rewrite forces the model to retype every unedited line of the file, and the longer the file, the likelier one of those lines goes missing. Code Janitor's integrity check exists to catch exactly that: a rewrite that silently drops a top-level declaration is rejected and costs an auto-fix round trip, or the whole proposal. Edits remove the failure mode instead of policing it — code outside an edit is copied through byte for byte, so it cannot be lost.
+
+That changes what the integrity check has to do:
+
+| Check | Full rewrite | Edits |
+| --- | --- | --- |
+| Omitted top-level declarations | Enforced (catches truncation) | **Skipped** — an absent declaration can only be a deliberate deletion |
+| Mass deletion (>50% of a file over 25 lines) | Enforced | Enforced |
+| Test framework imports added to `src/main/**` | Enforced | Enforced |
+| Line budgets (`max_line_diff` / `max_test_line_diff`) | Enforced | Enforced |
+
+The checks that remain are about *intent* and *size*, not truncation, so they apply either way. Edits also make the line budgets easier to stay inside: the diff a proposal produces is only what it actually changed.
+
+Set `edit_format: rewrite` to go back to whole-file content for every change (and the full integrity check with it). Full rewrites are always still accepted for new files, and as the model's fallback when an existing file needs restructuring that edits can't express cleanly.
 
 ---
 

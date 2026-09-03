@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { FileChange, enforceLineBudget } from './config.js';
+import { FileChange, isEditBasedChange, enforceLineBudget } from './config.js';
 import { validateLineBudget } from './linebudget.js';
 
 // Tried in order per line; the first pattern that matches wins. Go's grammar (method
@@ -34,7 +34,20 @@ export function extractTopLevelDeclarations(content: string, _ext: string): stri
     return declarations;
 }
 
-export function validateSingleFileIntegrity(originalContent: string, updatedContent: string, filePath: string): { valid: boolean; reason: string } {
+export interface IntegrityOptions {
+    /**
+     * The change was expressed as targeted search/replace edits rather than a
+     * whole-file rewrite. Code outside an edit is copied through untouched, so a
+     * missing declaration can only be a deliberate deletion -- never the silent
+     * truncation the declaration check exists to catch. Skipping that check here is
+     * the point of edit-style changes: it removes the retry loop that a large file
+     * plus a chatty model would otherwise trigger. The mass-deletion and
+     * test-import checks still run, because those catch intent, not truncation.
+     */
+    editBased?: boolean;
+}
+
+export function validateSingleFileIntegrity(originalContent: string, updatedContent: string, filePath: string, options: IntegrityOptions = {}): { valid: boolean; reason: string } {
     if (!originalContent || !originalContent.trim()) {
         return { valid: true, reason: '' };
     }
@@ -51,17 +64,19 @@ export function validateSingleFileIntegrity(originalContent: string, updatedCont
         }
     }
 
-    const ext = path.extname(filePath).toLowerCase();
-    const origDeclarations = extractTopLevelDeclarations(originalContent, ext);
-    const updatedDeclarations = new Set(extractTopLevelDeclarations(updatedContent, ext));
+    if (!options.editBased) {
+        const ext = path.extname(filePath).toLowerCase();
+        const origDeclarations = extractTopLevelDeclarations(originalContent, ext);
+        const updatedDeclarations = new Set(extractTopLevelDeclarations(updatedContent, ext));
 
-    const missingDeclarations = origDeclarations.filter(decl => !updatedDeclarations.has(decl));
+        const missingDeclarations = origDeclarations.filter(decl => !updatedDeclarations.has(decl));
 
-    if (missingDeclarations.length > 0) {
-        return {
-            valid: false,
-            reason: `Integrity Check Failed: Fix omitted top-level declaration(s) in ${filePath}: [${missingDeclarations.join(', ')}]. Do not remove existing top-level functions or classes.`
-        };
+        if (missingDeclarations.length > 0) {
+            return {
+                valid: false,
+                reason: `Integrity Check Failed: Fix omitted top-level declaration(s) in ${filePath}: [${missingDeclarations.join(', ')}]. Do not remove existing top-level functions or classes.`
+            };
+        }
     }
 
     const origLines = originalContent.split(/\r?\n/).length;
@@ -91,7 +106,10 @@ export function validateFixIntegrity(
 
     for (const change of changes) {
         const orig = origMap.get(change.filePath) || '';
-        const res = validateSingleFileIntegrity(orig, change.updatedContent, change.filePath);
+        // updatedContent is resolved (edits applied) before validation runs; a change
+        // that never resolved has nothing to validate.
+        if (change.updatedContent === undefined) continue;
+        const res = validateSingleFileIntegrity(orig, change.updatedContent, change.filePath, { editBased: isEditBasedChange(change) });
         if (!res.valid) {
             return res;
         }

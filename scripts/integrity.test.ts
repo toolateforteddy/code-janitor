@@ -183,4 +183,59 @@ fun TopB() { /* modified */ }
         });
     });
 
+    describe('edit-based changes', () => {
+        const original = 'fun keepMe() { }\nfun alsoKeepMe() { }\n';
+
+        it('skips the omitted-declaration check for edit-based changes', () => {
+            // Edits copy through everything outside their snippet, so a declaration
+            // missing from the result is a deliberate deletion, not truncation.
+            const origMap = new Map([['src/App.kt', original]]);
+            const changes = [{
+                filePath: 'src/App.kt',
+                edits: [{ oldText: 'fun alsoKeepMe() { }', newText: '' }],
+                updatedContent: 'fun keepMe() { }\n\n',
+            }];
+            assert.equal(validateFixIntegrity(origMap, changes).valid, true);
+        });
+
+        it('still rejects the same omission from a full-file rewrite', () => {
+            const origMap = new Map([['src/App.kt', original]]);
+            const changes = [{ filePath: 'src/App.kt', updatedContent: 'fun keepMe() { }\n' }];
+            const res = validateFixIntegrity(origMap, changes);
+            assert.equal(res.valid, false);
+            assert.match(res.reason, /alsoKeepMe/);
+        });
+
+        it('still enforces the mass-deletion limit for edit-based changes', () => {
+            const bigFile = Array.from({ length: 40 }, (_, i) => `const v${i} = ${i};`).join('\n') + '\n';
+            const origMap = new Map([['src/big.ts', bigFile]]);
+            const changes = [{
+                filePath: 'src/big.ts',
+                edits: [{ oldText: 'const v0 = 0;', newText: 'const v0 = 0;' }],
+                updatedContent: 'const v0 = 0;\n',
+            }];
+            const res = validateFixIntegrity(origMap, changes);
+            assert.equal(res.valid, false);
+            assert.match(res.reason, /exceeds allowable deletion limits/);
+        });
+
+        it('still blocks test framework imports in production sources for edit-based changes', () => {
+            const origMap = new Map([['src/main/java/App.kt', 'fun app() { }\n']]);
+            const changes = [{
+                filePath: 'src/main/java/App.kt',
+                edits: [{ oldText: 'fun app() { }', newText: 'import org.junit.Test\nfun app() { }' }],
+                updatedContent: 'import org.junit.Test\nfun app() { }\n',
+            }];
+            const res = validateFixIntegrity(origMap, changes);
+            assert.equal(res.valid, false);
+            assert.match(res.reason, /test framework imports/);
+        });
+
+        it('ignores a change whose content never resolved', () => {
+            const origMap = new Map([['src/App.kt', original]]);
+            const changes = [{ filePath: 'src/App.kt', edits: [{ oldText: 'nope', newText: 'x' }] }];
+            assert.equal(validateFixIntegrity(origMap, changes).valid, true);
+        });
+    });
+
 });

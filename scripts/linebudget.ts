@@ -107,6 +107,9 @@ export function summarizeLineBudget(originalContents: Map<string, string>, chang
     let testLines = 0;
 
     for (const change of changes) {
+        // An edit-based change resolves to concrete content before validation runs;
+        // one still undefined here never made it to disk, so it adds no diff lines.
+        if (change.updatedContent === undefined) continue;
         const original = originalContents.get(change.filePath) ?? '';
         const { added, removed } = countDiffLines(original, change.updatedContent);
         const total = added + removed;
