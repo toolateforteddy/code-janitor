@@ -34,6 +34,10 @@ export const maxLineDiff = parseLineBudget(process.env.MAX_LINE_DIFF, 100);
 // against the production budget pushes the model toward thin tests or dropping them
 // altogether, so tests get their own budget.
 export const maxTestLineDiff = parseLineBudget(process.env.MAX_TEST_LINE_DIFF, 200);
+// The budgets above are stated in the prompt, but a model is free to ignore a
+// prompt, so they are also enforced in code against the actual proposed diff
+// (see linebudget.ts). Set ENFORCE_LINE_BUDGET=false to go back to prompt-only.
+export const enforceLineBudget = process.env.ENFORCE_LINE_BUDGET !== 'false';
 export const reviewers = process.env.REVIEWERS || '';
 export const isDraft = process.env.DRAFT_PR === 'true';
 export const maxConcurrency = parseInt(process.env.MAX_CONCURRENCY || '3', 10);

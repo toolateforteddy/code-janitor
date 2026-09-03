@@ -140,6 +140,47 @@ fun TopB() { /* modified */ }
             const res = validateFixIntegrity(origMap, changes);
             assert.equal(res.valid, true);
         });
+
+        it('rejects a multi-file proposal that blows the production line budget', () => {
+            // Default MAX_LINE_DIFF is 100 diff lines across non-test files.
+            const body = (n: number, prefix: string) =>
+                Array.from({ length: n }, (_, i) => `\t${prefix}${i}()`).join('\n');
+            const origMap = new Map<string, string>([['src/App.kt', 'fun mainApp() {\n}\n']]);
+            const changes = [
+                { filePath: 'src/App.kt', updatedContent: `fun mainApp() {\n${body(150, 'step')}\n}\n` },
+            ];
+            const res = validateFixIntegrity(origMap, changes);
+            assert.equal(res.valid, false);
+            assert.match(res.reason, /Line Budget Check Failed/);
+        });
+
+        it('does not count test-file lines against the production budget', () => {
+            const body = (n: number, prefix: string) =>
+                Array.from({ length: n }, (_, i) => `\t${prefix}${i}()`).join('\n');
+            const origMap = new Map<string, string>([
+                ['src/App.kt', 'fun mainApp() {\n}\n'],
+                ['src/test/AppTest.kt', ''],
+            ]);
+            const changes = [
+                { filePath: 'src/App.kt', updatedContent: `fun mainApp() {\n${body(20, 'step')}\n}\n` },
+                { filePath: 'src/test/AppTest.kt', updatedContent: `class AppTest {\n${body(150, 'check')}\n}\n` },
+            ];
+            const res = validateFixIntegrity(origMap, changes);
+            assert.equal(res.valid, true);
+        });
+
+        it('reports the structural integrity break before the line budget when a proposal fails both', () => {
+            const body = (n: number, prefix: string) =>
+                Array.from({ length: n }, (_, i) => `\t${prefix}${i}()`).join('\n');
+            const origMap = new Map<string, string>([['src/App.kt', 'fun mainApp() {\n}\nfun helper() {\n}\n']]);
+            const changes = [
+                { filePath: 'src/App.kt', updatedContent: `fun mainApp() {\n${body(200, 'step')}\n}\n` },
+            ];
+            const res = validateFixIntegrity(origMap, changes);
+            assert.equal(res.valid, false);
+            assert.match(res.reason, /Integrity Check Failed/);
+            assert.match(res.reason, /helper/);
+        });
     });
 
     describe('edit-based changes', () => {

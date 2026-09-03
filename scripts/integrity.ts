@@ -1,5 +1,6 @@
 import * as path from 'path';
-import { FileChange, isEditBasedChange } from './config.js';
+import { FileChange, isEditBasedChange, enforceLineBudget } from './config.js';
+import { validateLineBudget } from './linebudget.js';
 
 // Tried in order per line; the first pattern that matches wins. Go's grammar (method
 // receivers, "type"-prefixed declarations) doesn't fit the shared C-like keyword
@@ -113,5 +114,16 @@ export function validateFixIntegrity(
             return res;
         }
     }
+
+    // Budget check last: per-file integrity problems are more actionable feedback
+    // for the auto-fix retry than "too big", and a proposal that fails both should
+    // be told about the structural break first.
+    if (enforceLineBudget) {
+        const budget = validateLineBudget(origMap, changes);
+        if (!budget.valid) {
+            return { valid: false, reason: budget.reason };
+        }
+    }
+
     return { valid: true, reason: '' };
 }

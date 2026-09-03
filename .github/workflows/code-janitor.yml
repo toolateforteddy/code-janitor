@@ -28,6 +28,21 @@ on:
         type: string
         required: false
         default: ''
+      install_command:
+        description: 'Command to install project dependencies (e.g. npm ci, poetry install, pip install -r requirements.txt). Runs in the workspace and in any worktree still missing dependencies. If empty, Node installs are auto-detected from the lockfile.'
+        type: string
+        required: false
+        default: ''
+      install_timeout:
+        description: 'Timeout for dependency installation in minutes'
+        type: number
+        required: false
+        default: 10
+      auto_install:
+        description: 'Auto-detect and run a Node install command (npm ci / yarn / pnpm) when dependencies are missing and install_command is empty'
+        type: boolean
+        required: false
+        default: true
       target_path:
         description: 'Subdirectory path to restrict diff analysis to'
         type: string
@@ -58,6 +73,11 @@ on:
         type: number
         required: false
         default: 200
+      enforce_line_budget:
+        description: 'Reject proposals whose measured diff exceeds max_line_diff / max_test_line_diff (set false for prompt-only guidance)'
+        type: boolean
+        required: false
+        default: true
       max_concurrency:
         description: 'Maximum number of fixes to process in parallel (via git worktrees) per run'
         type: number
@@ -150,12 +170,16 @@ jobs:
           test_command: ${{ inputs.test_command }}
           test_timeout: ${{ inputs.test_timeout }}
           lint_command: ${{ inputs.lint_command }}
+          install_command: ${{ inputs.install_command }}
+          install_timeout: ${{ inputs.install_timeout }}
+          auto_install: ${{ inputs.auto_install }}
           target_path: ${{ inputs.target_path }}
           exclude_paths: ${{ inputs.exclude_paths }}
           enable_test_generation: ${{ inputs.enable_test_generation }}
           max_prs_per_run: ${{ inputs.max_prs_per_run }}
           max_line_diff: ${{ inputs.max_line_diff }}
           max_test_line_diff: ${{ inputs.max_test_line_diff }}
+          enforce_line_budget: ${{ inputs.enforce_line_budget }}
           max_concurrency: ${{ inputs.max_concurrency }}
           reviewers: ${{ inputs.reviewers }}
           draft_pr: ${{ inputs.draft_pr }}

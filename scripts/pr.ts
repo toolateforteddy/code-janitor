@@ -19,7 +19,15 @@ import { applyEdits } from './edits.js';
 import { runVerification, logFailedDiff, cleanupWorktree } from './git.js';
 import { prepareWorktreeDependencies } from './deps.js';
 import { validateFixIntegrity } from './integrity.js';
+import { formatLineBudgetSummary } from './linebudget.js';
 import { attemptAutoFix, findFileInWorkspaceByBasename, sanitizeRelativePath } from './ai.js';
+import { recordFixResult } from './summary.js';
+
+/** Pull the PR URL out of `gh pr create` output, which may also carry warning lines. */
+export function extractPrUrl(output: string): string | undefined {
+    const match = output.match(/https:\/\/\S*\/pull\/\d+/);
+    return match ? match[0] : undefined;
+}
 
 /**
  * Writes a proposal's file changes into `workDir` and records each file's pre-change
@@ -123,6 +131,7 @@ export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir:
         if (!stagedFiles.trim()) {
             const targetFile = fix.filePath || (changes.length > 0 ? changes.map(c => c.filePath).join(', ') : fix.slug);
             console.warn(`⚠️ No staged changes found in worktree for fix '${fix.slug}' (${targetFile}). Skipping PR creation.`);
+            recordFixResult({ slug: fix.slug, title: fix.title, modeType, outcome: 'no-changes', detail: 'Nothing staged to commit' });
             return false;
         }
 
@@ -152,8 +161,13 @@ export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir:
     if (reviewers) prArgs.push('--reviewer', reviewers);
 
     try {
-        execFileSync('gh', prArgs, { stdio: 'inherit', cwd: workDir });
+        // Capture rather than inherit stdout: `gh pr create` prints the new PR's URL, which
+        // the job summary links to. stderr still streams through for progress/errors.
+        const ghOut = execFileSync('gh', prArgs, { stdio: ['pipe', 'pipe', 'inherit'], cwd: workDir, encoding: 'utf-8' });
+        const prUrl = extractPrUrl(ghOut);
+        if (ghOut.trim()) console.log(ghOut.trim());
         console.log(` Successfully created PR for: ${fix.title}`);
+        recordFixResult({ slug: fix.slug, title: fix.title, modeType, outcome: 'pr-created', detail: `\`${branchName}\``, prUrl });
         return true;
     } catch (err) {
         console.error(`❌ Failed to create pull request via GitHub CLI:`, err);
@@ -177,6 +191,7 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
         const statusPorcelain = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf-8', cwd: worktreePath }).trim();
         if (!statusPorcelain && editFailures.length === 0) {
             console.warn(`⚠️ No file diffs or untracked changes detected for '${fix.slug}'. Skipping...`);
+            recordFixResult({ slug: fix.slug, title: fix.title, modeType, outcome: 'no-changes', detail: 'Proposal left the worktree unchanged' });
             return false;
         }
         console.log(`Working tree status (${fix.slug}):\n${statusPorcelain.split('\n').map(l => '  ' + l).join('\n')}`);
@@ -187,6 +202,8 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
         // after the status check above so linked dep dirs can't be mistaken for
         // proposal changes.
         prepareWorktreeDependencies(mainWorkspace, worktreePath);
+
+        console.log(`📏 Line budget for '${fix.slug}': ${formatLineBudgetSummary(originalContents, changes)}`);
 
         const integrity = validateFixIntegrity(originalContents, changes);
         let verifResult: ReturnType<typeof runVerification>;
@@ -218,6 +235,7 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
 
         if (!verifResult.success) {
             console.error(`❌ Verification failed for fix '${fix.slug}'. Cleaning up...`);
+            recordFixResult({ slug: fix.slug, title: fix.title, modeType, outcome: 'verification-failed', detail: `Failed at ${verifResult.failedStep || 'verification'}` });
             logFailedDiff(fix, worktreePath);
             return false;
         }
@@ -225,6 +243,7 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
         return createAndSubmitPR(fix, branchName, worktreePath, modeType, finalChanges);
     } catch (error) {
         console.error(`❌ Error processing fix '${fix.slug}':`, error);
+        recordFixResult({ slug: fix.slug, title: fix.title, modeType, outcome: 'error', detail: error instanceof Error ? error.message : String(error) });
         throw error;
     } finally {
         cleanupWorktree(worktreePath);
@@ -252,6 +271,7 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
         const statusPorcelain = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf-8', cwd: workDir }).trim();
         if (!statusPorcelain && editFailures.length === 0) {
             console.warn(`⚠️ No file diffs or untracked changes detected for '${fix.slug}'. Discarding branch...`);
+            recordFixResult({ slug: fix.slug, title: fix.title, modeType, outcome: 'no-changes', detail: 'Proposal left the working tree unchanged' });
             try {
                 execFileSync('git', ['checkout', defaultBranch]);
                 execFileSync('git', ['reset', '--hard', defaultBranch]);
@@ -259,6 +279,8 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
             return false;
         }
         console.log(`Working tree status (${fix.slug}):\n${statusPorcelain.split('\n').map(l => '  ' + l).join('\n')}`);
+
+        console.log(`📏 Line budget for '${fix.slug}': ${formatLineBudgetSummary(originalContents, changes)}`);
 
         const integrity = validateFixIntegrity(originalContents, changes);
         let verifResult: ReturnType<typeof runVerification>;
@@ -290,6 +312,7 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
 
         if (!verifResult.success) {
             console.error(`❌ Verification failed for fix '${fix.slug}'. Discarding branch...`);
+            recordFixResult({ slug: fix.slug, title: fix.title, modeType, outcome: 'verification-failed', detail: `Failed at ${verifResult.failedStep || 'verification'}` });
             logFailedDiff(fix, workDir);
             try {
                 execFileSync('git', ['checkout', defaultBranch]);
@@ -301,6 +324,7 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
         return createAndSubmitPR(fix, branchName, workDir, modeType, finalChanges);
     } catch (error) {
         console.error(`❌ Error processing fix '${fix.slug}':`, error);
+        recordFixResult({ slug: fix.slug, title: fix.title, modeType, outcome: 'error', detail: error instanceof Error ? error.message : String(error) });
         try {
             execFileSync('git', ['checkout', defaultBranch]);
             execFileSync('git', ['reset', '--hard', defaultBranch]);
