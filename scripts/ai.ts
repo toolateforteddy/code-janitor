@@ -569,7 +569,7 @@ export function getSiblingTestContexts(
     return contexts.join('\n\n');
 }
 
-export async function generateRepairProposals(buildErrorLogs: string, workDir: string = process.cwd()): Promise<FixProposal[]> {
+export async function generateRepairProposals(buildErrorLogs: string, workDir: string = process.cwd(), existingPRContext: string = ''): Promise<FixProposal[]> {
     const agentContexts = getAgentFilesContext(workDir);
     const agentFilePaths = new Set(collectAgentFiles(workDir));
 
@@ -600,6 +600,7 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
     12. FILE PATH ACCURACY MANDATE: You MUST preserve the exact file paths, directory structures, and package/module folders of existing files provided in the context or error logs. When modifying an existing file or creating a related test file, match the exact relative folder path and source root conventions of the target codebase. Do NOT invent new package paths or hallucinate directory layouts.
     13. MATCH EXISTING TEST CONVENTIONS: When you add or edit tests, mirror the existing test files provided in the context exactly: same test framework and runner, same import/package/module declarations, same helper and fixture utilities, and the same file naming and directory placement. Do NOT invent test frameworks, helpers, or imports that the existing tests do not already use.
     14. WORKSPACE TOOLS: You have access to interactive workspace tools ('read_file', 'list_directory', 'run_command'). Call available tools if you need to read additional source/test files, inspect workspace structure, or run safe commands.
+    15. NO DUPLICATE PROPOSALS: If a list of pull requests the janitor has already submitted is provided, do NOT re-propose any fix those PRs already cover. This sweep runs on a schedule and re-observes the same failures until the pending fix is merged; an open PR means the repair is already awaiting review, and a closed unmerged PR means a human rejected that approach. Propose only genuinely new fixes, and return an empty 'fixes' list if every remaining failure is already covered.
   `;
 
     let promptText = `Build/Test Error Logs:\n\n${buildErrorLogs.slice(0, 15000)}`;
@@ -612,6 +613,9 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
     if (testContexts) {
         promptText += `\n\nExisting test files from this repository (follow these conventions exactly when writing tests):\n\n${testContexts}`;
     }
+    if (existingPRContext) {
+        promptText += `\n\nPull requests the Code Janitor has ALREADY submitted (do NOT re-propose these fixes):\n\n${existingPRContext}`;
+    }
 
     console.log("🔧 Querying model for repair proposals...");
     const result = await generateStructuredWithTools(fixesResponseSchema, repairPrompt, promptText, tools);
@@ -623,7 +627,7 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
 }
 
 
-export async function generateFixProposals(diff: string, workDir: string = process.cwd()): Promise<FixProposal[]> {
+export async function generateFixProposals(diff: string, workDir: string = process.cwd(), existingPRContext: string = ''): Promise<FixProposal[]> {
     const agentContexts = getAgentFilesContext(workDir);
     const agentFilePaths = new Set(collectAgentFiles(workDir));
 
@@ -653,6 +657,7 @@ export async function generateFixProposals(diff: string, workDir: string = proce
     13. FILE PATH ACCURACY MANDATE: You MUST preserve the exact file paths, directory structures, and package/module folders of existing files provided in the context or error logs. When modifying an existing file or creating a related test file, match the exact relative folder path and source root conventions of the target codebase. Do NOT invent new package paths or hallucinate directory layouts.
     14. MATCH EXISTING TEST CONVENTIONS: When you add or edit tests, mirror the existing test files provided in the context exactly: same test framework and runner, same import/package/module declarations, same helper and fixture utilities, and the same file naming and directory placement. Do NOT invent test frameworks, helpers, or imports that the existing tests do not already use.
     15. WORKSPACE TOOLS: You have access to interactive workspace tools ('read_file', 'list_directory', 'run_command'). Call available tools if you need to inspect existing test files, helper utilities, or directory layouts.
+    16. NO DUPLICATE PROPOSALS: If a list of pull requests the janitor has already submitted is provided, do NOT re-propose any improvement those PRs already cover. An open PR means that change is already awaiting review; a closed unmerged PR means a human rejected that approach.
   `;
 
     let promptText = `Recent codebase diffs:\n\n${diff.slice(0, 15000)}`;
@@ -664,6 +669,9 @@ export async function generateFixProposals(diff: string, workDir: string = proce
     }
     if (testContexts) {
         promptText += `\n\nExisting test files from this repository (follow these conventions exactly when writing tests):\n\n${testContexts}`;
+    }
+    if (existingPRContext) {
+        promptText += `\n\nPull requests the Code Janitor has ALREADY submitted (do NOT re-propose these changes):\n\n${existingPRContext}`;
     }
 
     console.log("🤖 Querying model for refactor proposals...");

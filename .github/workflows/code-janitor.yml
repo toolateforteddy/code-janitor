@@ -88,6 +88,11 @@ on:
         type: number
         required: false
         default: 5
+      dedupe_prs:
+        description: 'Skip proposals already covered by an existing (open, or closed-unmerged) Code Janitor PR'
+        type: boolean
+        required: false
+        default: true
       go_version:
         description: 'Go version (e.g. "1.22", "oldstable", "stable"). If empty, reads from go.mod.'
         type: string
@@ -157,6 +162,7 @@ jobs:
           janitor_mode: ${{ inputs.janitor_mode }}
           enable_llm_tools: ${{ inputs.enable_llm_tools }}
           max_llm_tool_steps: ${{ inputs.max_llm_tool_steps }}
+          dedupe_prs: ${{ inputs.dedupe_prs }}
           go_version: ${{ inputs.go_version }}
           node_version: ${{ inputs.node_version }}
           python_version: ${{ inputs.python_version }}
