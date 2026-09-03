@@ -146,6 +146,9 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 | `test_command` | Command to run tests | `'go test ./...'` |
 | `test_timeout` | Timeout for test execution in minutes | `5` |
 | `lint_command` | Command to run linters before tests | `''` |
+| `install_command` | Command to install project dependencies (e.g. `npm ci`, `poetry install`, `pip install -r requirements.txt`). Runs in the workspace and in any worktree still missing dependencies | `''` |
+| `install_timeout` | Timeout for dependency installation in minutes | `10` |
+| `auto_install` | Auto-detect and run a Node install command (`npm ci` / `yarn` / `pnpm`) when dependencies are missing and `install_command` is empty | `true` |
 | `target_path` | Subdirectory path to restrict diff analysis to | `'.'` |
 | `exclude_paths` | Comma-separated glob patterns to ignore | `'.github/workflows/**, vendor/**, generated/**, dist/**'` |
 | `enable_test_generation` | Whether to write unit tests for uncovered code | `true` |
@@ -166,6 +169,28 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 | `gemini_api_key` | Gemini API key (can also be supplied via `GEMINI_API_KEY` env var) | `''` |
 | `anthropic_api_key` | Anthropic API key (can also be supplied via `ANTHROPIC_API_KEY` env var) | `''` |
 | `openai_api_key` | OpenAI API key (can also be supplied via `OPENAI_API_KEY` env var) | `''` |
+
+---
+
+## 📦 Dependencies in Parallel Worktrees (Node / Python)
+
+Each proposed fix is verified inside its own `git worktree`, which is a **clean checkout**: gitignored dependency trees like `node_modules/` and `.venv/` do not come along. Go modules, Cargo, and Gradle keep their caches outside the repository, so only Node- and Python-style projects hit this. Left alone, every proposal would fail verification with `Cannot find module` or `No module named …` no matter how good the fix was.
+
+Code Janitor prepares each worktree before running lint/tests:
+
+1. **Reuse first.** Dependency directories found in the primary workspace (`node_modules`, `.venv`, `venv`, including nested ones such as `packages/api/node_modules`) are symlinked into the worktree. Nothing is reinstalled per fix, and an existing directory in the worktree is never overwritten. Linking happens *after* the proposal's changes are staged for inspection, so linked dependencies can never be mistaken for — or committed as — part of a PR.
+2. **Install what is still missing.** If `install_command` is set, it runs in any workspace or worktree that still looks uninstalled. Otherwise, with `auto_install` enabled (the default), the install command for Node projects is derived from the lockfile: `pnpm-lock.yaml` → `pnpm install --frozen-lockfile`, `yarn.lock` → `yarn install --frozen-lockfile`, `package-lock.json` / `npm-shrinkwrap.json` → `npm ci`, otherwise `npm install`.
+
+The same step runs once on the primary checkout before the initial health check, so a Node repo whose workflow never installed dependencies is not misdiagnosed as a broken `main`.
+
+Python installs are never guessed — set `install_command` (e.g. `pip install -r requirements.txt`, `poetry install`, `uv sync`) if your tests need one. A project-local `.venv/` is linked automatically, and a globally installed interpreter environment is inherited by worktrees as-is.
+
+```yaml
+- uses: toolateforteddy/code-janitor@v1
+  with:
+    test_command: 'npm test'
+    install_command: 'npm ci'   # optional; auto-detected from the lockfile when omitted
+```
 
 ---
 
