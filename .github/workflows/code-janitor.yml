@@ -49,10 +49,15 @@ on:
         required: false
         default: 3
       max_line_diff:
-        description: 'Hard cap on total diff lines per atomic PR'
+        description: 'Hard cap on total diff lines to non-test files per atomic PR'
         type: number
         required: false
         default: 100
+      max_test_line_diff:
+        description: 'Hard cap on total diff lines to test files per atomic PR (counted separately from max_line_diff)'
+        type: number
+        required: false
+        default: 200
       max_concurrency:
         description: 'Maximum number of fixes to process in parallel (via git worktrees) per run'
         type: number
@@ -145,6 +150,7 @@ jobs:
           enable_test_generation: ${{ inputs.enable_test_generation }}
           max_prs_per_run: ${{ inputs.max_prs_per_run }}
           max_line_diff: ${{ inputs.max_line_diff }}
+          max_test_line_diff: ${{ inputs.max_test_line_diff }}
           max_concurrency: ${{ inputs.max_concurrency }}
           reviewers: ${{ inputs.reviewers }}
           draft_pr: ${{ inputs.draft_pr }}

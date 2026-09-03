@@ -7,6 +7,7 @@ import {
     ensureTrailingNewline,
     fixesResponseSchema,
     maxPRs,
+    parseLineBudget,
 } from './config.js';
 
 describe('config module test suite', () => {
@@ -34,6 +35,34 @@ describe('config module test suite', () => {
             const model = getModel('unknown', 'custom-model');
             assert.ok(model);
             assert.equal(typeof model, 'object');
+        });
+    });
+
+    describe('parseLineBudget()', () => {
+        it('parses a positive integer', () => {
+            assert.equal(parseLineBudget('250', 100), 250);
+        });
+
+        it('falls back when unset', () => {
+            assert.equal(parseLineBudget(undefined, 100), 100);
+        });
+
+        it('falls back on an empty string', () => {
+            assert.equal(parseLineBudget('', 100), 100);
+        });
+
+        it('falls back on a non-numeric value', () => {
+            assert.equal(parseLineBudget('lots', 100), 100);
+        });
+
+        it('falls back on zero and negative values', () => {
+            assert.equal(parseLineBudget('0', 100), 100);
+            assert.equal(parseLineBudget('-5', 100), 100);
+        });
+
+        it('keeps the production and test budgets independent', () => {
+            assert.equal(parseLineBudget('100', 100), 100);
+            assert.equal(parseLineBudget('200', 200), 200);
         });
     });
 
