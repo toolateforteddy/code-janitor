@@ -62,6 +62,10 @@ inputs:
     description: 'Hard cap on total diff lines to test files per atomic PR (counted separately from max_line_diff)'
     required: false
     default: '200'
+  enforce_line_budget:
+    description: 'Reject proposals whose measured diff exceeds max_line_diff / max_test_line_diff (set false for prompt-only guidance)'
+    required: false
+    default: 'true'
   max_concurrency:
     description: 'Maximum number of fixes to process in parallel (via git worktrees) per run'
     required: false
@@ -238,6 +242,7 @@ runs:
         MAX_PRS: ${{ inputs.max_prs_per_run }}
         MAX_LINE_DIFF: ${{ inputs.max_line_diff }}
         MAX_TEST_LINE_DIFF: ${{ inputs.max_test_line_diff }}
+        ENFORCE_LINE_BUDGET: ${{ inputs.enforce_line_budget }}
         MAX_CONCURRENCY: ${{ inputs.max_concurrency }}
         REVIEWERS: ${{ inputs.reviewers }}
         DRAFT_PR: ${{ inputs.draft_pr }}
