@@ -11,6 +11,7 @@ import {
     enableTestGen,
     maxPRs,
     maxLineDiff,
+    maxTestLineDiff,
     fileChangeSchema,
     FileChange,
     FixProposal,
@@ -391,7 +392,7 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
     RULES:
     1. Fix ONLY what is necessary to resolve the build or test failures.
     2. Do NOT introduce new features or unnecessary refactoring.
-    3. Keep diffs as concise as possible (under ~${maxLineDiff} total diff lines across all modified files).
+    3. SEPARATE LINE BUDGETS: Keep changes to non-test (production) files under ~${maxLineDiff} total diff lines. Test file changes have their own separate budget of ~${maxTestLineDiff} total diff lines and do NOT count against the production budget, so never thin out or drop a needed test to stay within the production budget.
     4. MULTI-FILE PROPOSALS SUPPORTED: Include all modified files in the 'changes' array. You can modify up to 5 related files in a single proposal (e.g., fixing a function signature and updating callers/test files).
     5. FULL FILE CONTENT MANDATE (DO NOT TRUNCATE): 'updatedContent' MUST contain the COMPLETE, exact file content from line 1 to the end. NEVER abbreviate, summarize, or omit unedited code with comments like '// ...' or skip existing top-level functions, structs, classes, imports, macros, or types. Omitting top-level declarations causes immediate integrity check failures and invalidates the proposal.
     6. PRESERVE API CONTRACTS: If you modify a function signature, update all relevant caller sites across modified files in 'changes'.
@@ -437,7 +438,7 @@ export async function generateFixProposals(diff: string, workDir: string = proce
     
     RULES:
     1. Each fix MUST be completely self-contained and atomic.
-    2. Do NOT propose changes larger than ~${maxLineDiff} total diff lines across all modified files.
+    2. SEPARATE LINE BUDGETS: Do NOT propose changes to non-test (production) files larger than ~${maxLineDiff} total diff lines. Test files (e.g. '*_test.go', '*.test.ts', 'src/test/**', 'tests/**', or whatever this project uses) have their own separate budget of ~${maxTestLineDiff} total diff lines and do NOT count against the production budget, so never thin out or drop a needed test to stay within the production budget.
     3. MULTI-FILE PROPOSALS SUPPORTED: Each proposal specifies a 'changes' array containing 1 to 5 file modifications. You can pair a production file refactor with a separate unit test file or update caller sites when modifying a signature.
     4. ${enableTestGen ? 'Feel free to generate unit tests for uncovered paths using language-idiomatic test patterns.' : 'Do NOT generate test files or test classes; focus only on code refactoring.'}
     5. Focus on idiomatic improvements, resource cleanup, performance, or edge-case bug fixes. DO NOT propose redundant refactorings for logic or validation that already exists in the file.
