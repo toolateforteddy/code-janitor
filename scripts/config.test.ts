@@ -9,6 +9,7 @@ import {
     ensureTrailingNewline,
     fixesResponseSchema,
     maxPRs,
+    parseNonNegativeInt,
     parseLineBudget,
 } from './config.js';
 
@@ -157,6 +158,23 @@ describe('config module test suite', () => {
             const contentChange = fileChangeSchema.parse({ filePath: 'b.ts', updatedContent: 'x\n' });
             assert.equal(isEditBasedChange(editChange), true);
             assert.equal(isEditBasedChange(contentChange), false);
+        });
+    });
+
+    describe('parseNonNegativeInt()', () => {
+        it('accepts zero so retrying can be turned off entirely', () => {
+            assert.equal(parseNonNegativeInt('0', 4), 0);
+        });
+
+        it('parses positive values', () => {
+            assert.equal(parseNonNegativeInt('7', 4), 7);
+        });
+
+        it('falls back on unset, non-numeric, and negative values', () => {
+            assert.equal(parseNonNegativeInt(undefined, 4), 4);
+            assert.equal(parseNonNegativeInt('', 4), 4);
+            assert.equal(parseNonNegativeInt('lots', 4), 4);
+            assert.equal(parseNonNegativeInt('-1', 4), 4);
         });
     });
 

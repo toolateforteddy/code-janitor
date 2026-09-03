@@ -22,9 +22,13 @@ import {
     maxLlmToolSteps,
     preferEdits,
     isEditBasedChange,
+    llmMaxRetries,
+    llmRetryBaseDelayMs,
+    llmRetryMaxDelayMs,
 } from './config.js';
 import { applyEdits } from './edits.js';
 import { runVerification, logFailedDiff, runCmd } from './git.js';
+import { withLlmRetry } from './retry.js';
 import { isTestFilePath } from './paths.js';
 
 const EDIT_FORMAT_RULE = `CHANGE FORMAT (PREFER TARGETED EDITS): For an EXISTING file, express the change as an 'edits' array of search/replace pairs: 'oldText' is a snippet copied VERBATIM from the current file content (exact indentation, enough surrounding lines to be unique in that file) and 'newText' is what replaces it. Use an empty 'newText' to delete the snippet, and set 'replaceAll' only when every occurrence should change. Do NOT echo the whole file back. For a NEW file, omit 'edits' and put the complete file body in 'updatedContent'. If you do fall back to 'updatedContent' for an existing file, it MUST be the COMPLETE file from line 1 to the end -- never abbreviate or summarize unedited code with '// ...' and never drop existing top-level functions, structs, classes, imports, macros, or types.`;
@@ -200,26 +204,42 @@ async function generateStructuredWithTools<T extends z.ZodTypeAny>(
     prompt: string,
     tools: ReturnType<typeof createJanitorTools>
 ): Promise<z.infer<T>> {
+    // `maxRetries: 0` disables the SDK's own retry loop so that retrying happens in
+    // exactly one place: `withLlmRetry`, which also covers unparseable structured
+    // output and logs each attempt.
+    const retryOptions = {
+        maxRetries: llmMaxRetries,
+        baseDelayMs: llmRetryBaseDelayMs,
+        maxDelayMs: llmRetryMaxDelayMs,
+        label: `${provider}/${modelName} request`,
+    };
+
     if (tools) {
-        const result = await generateText({
-            model: getModel(provider, modelName),
-            tools,
-            stopWhen: stepCountIs(maxLlmToolSteps),
-            system,
-            prompt,
-            output: Output.object<z.infer<T>>({ schema }),
-        });
-        return result.output;
+        return withLlmRetry(async () => {
+            const result = await generateText({
+                model: getModel(provider, modelName),
+                tools,
+                stopWhen: stepCountIs(maxLlmToolSteps),
+                system,
+                prompt,
+                maxRetries: 0,
+                output: Output.object<z.infer<T>>({ schema }),
+            });
+            return result.output;
+        }, retryOptions);
     }
 
-    const result = await generateObject({
-        model: getModel(provider, modelName),
-        schema,
-        output: 'object',
-        system,
-        prompt,
-    });
-    return result.object as z.infer<T>;
+    return withLlmRetry(async () => {
+        const result = await generateObject({
+            model: getModel(provider, modelName),
+            schema,
+            output: 'object',
+            system,
+            prompt,
+            maxRetries: 0,
+        });
+        return result.object as z.infer<T>;
+    }, retryOptions);
 }
 
 

@@ -43,6 +43,19 @@ export const isDraft = process.env.DRAFT_PR === 'true';
 export const maxConcurrency = parseInt(process.env.MAX_CONCURRENCY || '3', 10);
 export const enableLlmTools = process.env.ENABLE_LLM_TOOLS !== 'false';
 export const maxLlmToolSteps = parseInt(process.env.MAX_LLM_TOOL_STEPS || '5', 10);
+
+/** Parses a count/duration that is allowed to be zero (unlike line budgets). */
+export function parseNonNegativeInt(raw: string | undefined, fallback: number): number {
+    const parsed = parseInt(raw ?? '', 10);
+    return isNaN(parsed) || parsed < 0 ? fallback : parsed;
+}
+
+// Provider APIs flake: 429s under load, 5xx, dropped sockets, and occasional
+// unparseable structured output. A janitor run costs a full checkout + verification
+// pass, so a single transient blip should not throw the whole run away.
+export const llmMaxRetries = parseNonNegativeInt(process.env.LLM_MAX_RETRIES, 4);
+export const llmRetryBaseDelayMs = parseNonNegativeInt(process.env.LLM_RETRY_BASE_DELAY_MS, 1000);
+export const llmRetryMaxDelayMs = parseNonNegativeInt(process.env.LLM_RETRY_MAX_DELAY_MS, 30000);
 // Deduplication is on unless explicitly disabled: without it a nightly repair sweep
 // re-observes the same red main branch and opens a fresh PR for the same fix every run.
 export const dedupePRs = process.env.DEDUPE_PRS !== 'false';
