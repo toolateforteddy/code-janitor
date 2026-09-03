@@ -22,6 +22,7 @@ import {
     generateFixProposals,
 } from './ai.js';
 import { processFixes } from './pr.js';
+import { installMissingDependencies } from './deps.js';
 
 export async function main() {
     console.log(`🧹 Code Janitor initializing [provider: ${provider} | model: ${modelName} | mode: ${mode}]`);
@@ -32,6 +33,7 @@ export async function main() {
     // STEP 1: INITIAL HEALTH CHECK
     // -------------------------------------------------------------
     console.log("🔍 Checking main branch health...");
+    installMissingDependencies(process.cwd());
     const verifResult = runVerification(lintCmd, testCmd, testTimeoutMs);
 
     let isBroken = false;
