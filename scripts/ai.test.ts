@@ -18,9 +18,48 @@ import {
     isCommandAllowed,
     sanitizeRelativePath,
     createJanitorTools,
+    summarizeToolSteps,
+    buildFinalizationPrompt,
+    TOOL_TRANSCRIPT_LIMIT,
 } from './ai.js';
 
 describe('ai module test suite', () => {
+
+    describe('summarizeToolSteps() & buildFinalizationPrompt()', () => {
+        it('renders tool calls and their output as a replayable transcript', () => {
+            const transcript = summarizeToolSteps([
+                {
+                    toolCalls: [{ toolName: 'run_command', input: { command: 'ls -la' } }],
+                    toolResults: [{ toolName: 'run_command', output: 'total 0' }],
+                },
+            ]);
+            assert.match(transcript, /run_command\({"command":"ls -la"}\)/);
+            assert.match(transcript, /run_command returned:\ntotal 0/);
+        });
+
+        it('returns an empty transcript for missing or empty steps', () => {
+            assert.equal(summarizeToolSteps(undefined), '');
+            assert.equal(summarizeToolSteps([]), '');
+        });
+
+        it('truncates an oversized transcript instead of resending it whole', () => {
+            const steps = [{ toolResults: [{ toolName: 'read_file', output: 'x'.repeat(TOOL_TRANSCRIPT_LIMIT * 2) }] }];
+            const transcript = summarizeToolSteps(steps);
+            assert.ok(transcript.length < TOOL_TRANSCRIPT_LIMIT * 2);
+            assert.match(transcript, /tool transcript truncated/);
+        });
+
+        it('tells the model to answer now and replays the transcript when there is one', () => {
+            const withTools = buildFinalizationPrompt('ORIGINAL', 'TRANSCRIPT');
+            assert.match(withTools, /^ORIGINAL/);
+            assert.match(withTools, /TRANSCRIPT/);
+            assert.match(withTools, /no tools available/);
+
+            const without = buildFinalizationPrompt('ORIGINAL', '');
+            assert.match(without, /^ORIGINAL/);
+            assert.doesNotMatch(without, /inspection you already performed/);
+        });
+    });
 
     describe('generateRepairProposals() & file context extraction', () => {
         it('is defined as an async function', () => {
@@ -324,6 +363,7 @@ Unresolved reference: ScribblePuzzleViewModel in ScribblePuzzleViewModel.kt: (12
             assert.equal(isCommandAllowed('git log -n 5'), true);
             assert.equal(isCommandAllowed('cat src/index.ts'), true);
             assert.equal(isCommandAllowed('find . -name "*.ts"'), true);
+            assert.equal(isCommandAllowed('git ls-files --stage run_tests.sh'), true);
 
             assert.equal(isCommandAllowed('rm -rf /'), false);
             assert.equal(isCommandAllowed('git push origin main'), false);

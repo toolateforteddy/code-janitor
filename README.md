@@ -289,7 +289,10 @@ When `enable_llm_tools` is set to `true` (default), the LLM can dynamically insp
 ### Available Tools
 - `read_file`: Reads the text contents of a workspace file relative to the project root.
 - `list_directory`: Lists directory entries (files and folders) within the workspace, ignoring `.git`, `node_modules`, `dist`, `build`, etc.
-- `run_command`: Executes small, safe, read-only diagnostic commands (`ls`, `dir`, `find`, `git status`, `git log`, `git diff`, `cat`, `grep`, `pwd`, `tree`, `head`, `tail`).
+- `run_command`: Executes small, safe, read-only diagnostic commands (`ls`, `dir`, `find`, `git status`, `git log`, `git diff`, `git ls-files`, `cat`, `grep`, `pwd`, `tree`, `head`, `tail`).
+
+### Step Budget Exhaustion
+The tool loop is bounded by `max_llm_tool_steps`. If the model spends every step on tool calls and never returns its structured answer, the run does **not** fail: the janitor re-asks once with tools disabled, replaying the tool calls and their output in the prompt, so the sweep still produces proposals.
 
 ### Tool Logging & Visibility
 All tool invocations are logged directly to standard output during execution (e.g., `🛠️ Tool call: read_file("src/utils.ts") -> Read 1452 chars`), giving full visibility in GitHub Action logs into what data the model accessed.
