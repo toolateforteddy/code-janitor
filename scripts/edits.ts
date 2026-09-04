@@ -67,6 +67,13 @@ export function findFlexibleMatches(haystack: string, needle: string): Array<{ s
             end += 1;
         }
         matches.push({ start, end });
+
+        // Resume past this match rather than one line into it, so the returned ranges
+        // never overlap. A self-similar snippet ("}\n}" against three "}" lines) would
+        // otherwise yield overlapping ranges, and splicing the second over the first
+        // silently mangles the file. This also matches the exact-match path, which
+        // counts non-overlapping occurrences.
+        i = lastIdx;
     }
     return matches;
 }
