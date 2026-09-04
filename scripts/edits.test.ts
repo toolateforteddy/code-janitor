@@ -70,6 +70,20 @@ describe('edits module test suite', () => {
             assert.equal(all.content, 'x := 3\ny := 2\nx := 3\n');
         });
 
+        it('does not destroy content when a replaceAll snippet overlaps itself', () => {
+            // The needle matches lines 3-4 and (overlapping) 4-5 of the whitespace-drifted
+            // file. Splicing both ranges used to collapse them into one mangled line and
+            // drop the rest of the file while still reporting ok:true.
+            const file = 'func handler() {\n\tif a {\n\t\tdo()\n\t}\n\t}\n\t}\n}\n';
+            const res = applyEdits(file, [{ oldText: '    }\n    }', newText: '    }', replaceAll: true }], 'handler.go');
+
+            assert.equal(res.ok, true);
+            // One brace pair collapses; everything else survives byte for byte.
+            assert.equal(res.content, 'func handler() {\n\tif a {\n\t\tdo()\n    }\n\t}\n}\n');
+            assert.match(res.content, /func handler\(\) \{/);
+            assert.match(res.content, /do\(\)/);
+        });
+
         it('tolerates trailing-whitespace and tab/space indent drift in oldText', () => {
             // Models retype snippets from memory; a space-for-tab swap should not
             // cost a whole retry round trip.
@@ -114,6 +128,17 @@ describe('edits module test suite', () => {
 
         it('returns nothing when the block is absent', () => {
             assert.deepEqual(findFlexibleMatches('a\nb\n', 'c\nd'), []);
+        });
+
+        it('never returns overlapping ranges for a self-similar snippet', () => {
+            // Three identical lines against a two-line needle: reporting both
+            // [line0,line1] and [line1,line2] would make replaceAll splice the second
+            // range over the first using stale offsets, silently mangling the file.
+            const matches = findFlexibleMatches('a\na\na\n', 'a\na');
+            assert.equal(matches.length, 1);
+            for (let i = 1; i < matches.length; i++) {
+                assert.ok(matches[i].start >= matches[i - 1].end, 'ranges must not overlap');
+            }
         });
     });
 
