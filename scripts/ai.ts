@@ -1,4 +1,4 @@
-import { generateObject, generateText, tool, Output, stepCountIs } from 'ai';
+import { generateObject, generateText, tool, Output, stepCountIs, NoOutputGeneratedError } from 'ai';
 import { z } from 'zod';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -70,7 +70,7 @@ export function sanitizeRelativePath(workDir: string, rawPath: string): string |
 }
 
 const ALLOWED_COMMAND_PREFIXES = [
-    'ls', 'dir', 'find', 'git status', 'git log', 'git diff', 'cat', 'grep', 'pwd', 'tree', 'file', 'wc', 'head', 'tail'
+    'ls', 'dir', 'find', 'git status', 'git log', 'git diff', 'git ls-files', 'cat', 'grep', 'pwd', 'tree', 'file', 'wc', 'head', 'tail'
 ];
 
 export function isCommandAllowed(command: string): boolean {
@@ -192,6 +192,66 @@ export function createJanitorTools(workDir: string = process.cwd()) {
     };
 }
 
+/** Cap on how much replayed tool output the finalization prompt may carry. */
+export const TOOL_TRANSCRIPT_LIMIT = 20000;
+
+/**
+ * Renders the tool calls and their results from a `generateText` run as a plain-text
+ * transcript, so a follow-up toolless request can be told what the tools already found
+ * instead of rediscovering it.
+ */
+export function summarizeToolSteps(steps: unknown): string {
+    if (!Array.isArray(steps)) return '';
+
+    const lines: string[] = [];
+    for (const step of steps) {
+        const toolCalls = (step as { toolCalls?: any[] })?.toolCalls ?? [];
+        const toolResults = (step as { toolResults?: any[] })?.toolResults ?? [];
+        for (const call of toolCalls) {
+            let input: string;
+            try {
+                input = JSON.stringify(call?.input ?? call?.args ?? {});
+            } catch {
+                input = '{}';
+            }
+            lines.push(`$ ${call?.toolName ?? 'tool'}(${input})`);
+        }
+        for (const res of toolResults) {
+            const raw = res?.output ?? res?.result;
+            let output: string;
+            if (typeof raw === 'string') {
+                output = raw;
+            } else {
+                try {
+                    output = JSON.stringify(raw ?? '');
+                } catch {
+                    output = String(raw);
+                }
+            }
+            lines.push(`-> ${res?.toolName ?? 'tool'} returned:\n${output}`);
+        }
+    }
+
+    const transcript = lines.join('\n\n');
+    return transcript.length > TOOL_TRANSCRIPT_LIMIT
+        ? `${transcript.slice(0, TOOL_TRANSCRIPT_LIMIT)}\n... [tool transcript truncated at ${TOOL_TRANSCRIPT_LIMIT} characters]`
+        : transcript;
+}
+
+/**
+ * Builds the prompt for the toolless finalization pass: the original prompt, whatever the
+ * tools already reported, and an instruction to answer now rather than ask for more.
+ */
+export function buildFinalizationPrompt(prompt: string, transcript: string): string {
+    const instruction =
+        'You have no tools available for this request and no further inspection is possible. ' +
+        'Answer NOW with the structured response, using only the information above. ' +
+        'If it is not enough to justify any change, return an empty list rather than asking for more.';
+    return transcript
+        ? `${prompt}\n\nWorkspace inspection you already performed (tool calls and their output):\n\n${transcript}\n\n${instruction}`
+        : `${prompt}\n\n${instruction}`;
+}
+
 /**
  * Generates a schema-typed object from the model. `generateObject` does not accept
  * `tools`, so when workspace tools are enabled we route through `generateText` with
@@ -225,7 +285,29 @@ async function generateStructuredWithTools<T extends z.ZodTypeAny>(
                 maxRetries: 0,
                 output: Output.object<z.infer<T>>({ schema }),
             });
-            return result.output;
+
+            try {
+                return result.output;
+            } catch (err) {
+                if (!NoOutputGeneratedError.isInstance(err)) throw err;
+                // The model spent every allowed step on tool calls and never emitted the
+                // structured answer, so `result.output` has nothing to hand back. That is a
+                // budgeting problem, not a failed run: re-ask once without tools, replaying
+                // what the tools already told it, so the step budget cannot abort the sweep.
+                console.warn(
+                    `⚠️ Model used all ${maxLlmToolSteps} tool step(s) without returning a structured answer; ` +
+                    `re-asking once without tools using the gathered tool output.`
+                );
+                const finalized = await generateObject({
+                    model: getModel(provider, modelName),
+                    schema,
+                    output: 'object',
+                    system,
+                    prompt: buildFinalizationPrompt(prompt, summarizeToolSteps(result.steps)),
+                    maxRetries: 0,
+                });
+                return finalized.object as z.infer<T>;
+            }
         }, retryOptions);
     }
 

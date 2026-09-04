@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { APICallError, RetryError, NoObjectGeneratedError } from 'ai';
+import { APICallError, RetryError, NoObjectGeneratedError, NoOutputGeneratedError } from 'ai';
 import {
     isTransientLlmError,
     getRetryAfterMs,
@@ -38,6 +38,16 @@ function noObjectError(extra: { text?: string; cause?: Error } = {}) {
 describe('retry module test suite', () => {
 
     describe('isTransientLlmError()', () => {
+
+        it('treats a bare NoOutputGeneratedError as transient', () => {
+            assert.equal(isTransientLlmError(new NoOutputGeneratedError({})), true);
+        });
+
+        it('defers to the cause when NoOutputGeneratedError wraps a permanent failure', () => {
+            const wrapped = new NoOutputGeneratedError({ cause: apiError(401) });
+            assert.equal(isTransientLlmError(wrapped), false);
+        });
+
         it('retries 5xx responses', () => {
             for (const status of [500, 502, 503, 504, 529]) {
                 assert.equal(isTransientLlmError(apiError(status)), true, `status ${status}`);

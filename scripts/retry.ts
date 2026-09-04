@@ -1,4 +1,4 @@
-import { APICallError, RetryError, NoObjectGeneratedError } from 'ai';
+import { APICallError, RetryError, NoObjectGeneratedError, NoOutputGeneratedError } from 'ai';
 
 /**
  * HTTP statuses that are worth another attempt even though the provider answered.
@@ -83,6 +83,12 @@ export function isTransientLlmError(err: unknown, depth = 0): boolean {
     // Re-sampling usually fixes it — unless the underlying cause was a hard API
     // rejection, in which case the cause decides.
     if (NoObjectGeneratedError.isInstance(err)) {
+        return err.cause === undefined ? true : isTransientLlmError(err.cause, depth + 1);
+    }
+
+    // The model returned tool calls or prose but never the structured answer. Another
+    // sample usually lands it, so treat it the same way as unparseable output.
+    if (NoOutputGeneratedError.isInstance(err)) {
         return err.cause === undefined ? true : isTransientLlmError(err.cause, depth + 1);
     }
 
