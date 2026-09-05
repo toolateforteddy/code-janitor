@@ -11,6 +11,12 @@ if (process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
 // Environment Configurations
 export const provider = (process.env.AI_PROVIDER || 'google').toLowerCase();
 export const modelName = process.env.AI_MODEL || 'gemini-3.6-flash';
+// Backup model, used only when the primary reports an exhausted token/credit
+// allowance mid-run (see fallback.ts). Empty FALLBACK_AI_PROVIDER disables it; the
+// model may be left empty to take the provider's default from getModel().
+export const fallbackProvider = (process.env.FALLBACK_AI_PROVIDER || '').toLowerCase();
+export const fallbackModelName = process.env.FALLBACK_AI_MODEL || '';
+
 export const testCmd = process.env.TEST_CMD || 'go test ./...';
 const testTimeoutMinutes = parseInt(process.env.TEST_TIMEOUT || '5', 10);
 export const testTimeoutMs = (isNaN(testTimeoutMinutes) || testTimeoutMinutes <= 0 ? 5 : testTimeoutMinutes) * 60 * 1000;
@@ -145,6 +151,11 @@ export function getProposalChanges(fix: FixProposal): FileChange[] {
             ...c,
             updatedContent: c.updatedContent !== undefined ? ensureTrailingNewline(c.updatedContent) : undefined,
         }));
+}
+
+/** Human-readable "provider/model" label for logs and the run summary. */
+export function describeModel(prov: string, mod: string): string {
+    return `${prov}/${mod || 'default'}`;
 }
 
 export function getModel(prov: string, mod: string) {

@@ -11,6 +11,7 @@ import {
     maxPRs,
     parseNonNegativeInt,
     parseLineBudget,
+    describeModel,
 } from './config.js';
 
 describe('config module test suite', () => {
@@ -38,6 +39,16 @@ describe('config module test suite', () => {
             const model = getModel('unknown', 'custom-model');
             assert.ok(model);
             assert.equal(typeof model, 'object');
+        });
+    });
+
+    describe('describeModel()', () => {
+        it('renders provider and model', () => {
+            assert.equal(describeModel('anthropic', 'claude-sonnet-4-5'), 'anthropic/claude-sonnet-4-5');
+        });
+
+        it('names an omitted model as the provider default', () => {
+            assert.equal(describeModel('google', ''), 'google/default');
         });
     });
 

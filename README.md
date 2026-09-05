@@ -18,6 +18,7 @@
 - 🎯 **Atomic PRs:** Splits refactors and fixes into tiny, single-responsibility PRs (<100 lines) so reviews take 30 seconds.
 - 🛡️ **Zero Broken PR Guarantee:** Runs your native linters and test commands (`go test`, `cargo test`, `npm test`, `pytest`, `./gradlew test`) locally inside the runner. If a change breaks compilation or a test, **it is automatically discarded before a PR is opened**.
 - 📊 **Job Summary for Every Run:** Each run publishes a GitHub Actions job summary (`$GITHUB_STEP_SUMMARY`) — sweep type, branch health, proposal counts, and the outcome of every proposed fix with a link to the PR it opened — so you can see what a nightly sweep did without opening the logs.
+- 🔄 **Provider Fallback When Tokens Run Out:** Configure a backup provider and Janitor keeps going when the primary's token/credit allowance is spent — run Claude first, fail over to Gemini for the rest of the run. Exhausted-quota errors are told apart from ordinary rate limits, so a real 429 is still retried with backoff instead of burning the fallback.
 - 💸 **Near-Zero Running Cost ($0–$0.05/mo):** Powered by fast, affordable models like **Gemini 3.6 Flash**. Includes early exit logic if no recent code changes exist.
 
 ---
@@ -145,6 +146,8 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 | :--- | :--- | :--- |
 | `provider` | AI Provider (`google`, `anthropic`, `openai`) | `'google'` |
 | `model` | AI Model ID to execute | `'gemini-3.6-flash'` |
+| `fallback_provider` | Backup AI provider used for the rest of the run once the primary reports an exhausted token/credit allowance. Empty disables the fallback | `''` |
+| `fallback_model` | Model ID for the backup provider. Empty uses that provider's default | `''` |
 | `test_command` | Command to run tests | `'go test ./...'` |
 | `test_timeout` | Timeout for test execution in minutes | `5` |
 | `lint_command` | Command to run linters before tests | `''` |
@@ -164,7 +167,7 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 | `janitor_mode` | Execution mode (`auto`, `repair-only`, `refactor-only`) | `'auto'` |
 | `enable_llm_tools` | Allow LLM to call workspace tools (`read_file`, `list_directory`, `run_command`) | `true` |
 | `max_llm_tool_steps` | Maximum tool call steps per LLM request | `5` |
-| `llm_max_retries` | Retries after a transient LLM API failure (429, 5xx, dropped connection, unparseable response). `0` disables retrying | `4` |
+| `llm_max_retries` | Retries after a transient LLM API failure (429, 5xx, dropped connection, unparseable response). An exhausted token/credit allowance is never retried — it fails over to the backup model instead. `0` disables retrying | `4` |
 | `llm_retry_base_delay_ms` | Base delay in ms for exponential backoff between LLM retries | `1000` |
 | `llm_retry_max_delay_ms` | Maximum delay in ms between LLM retries | `30000` |
 | `dedupe_prs` | Skip proposals already covered by an existing (open, or closed-unmerged) Code Janitor PR | `true` |
@@ -304,6 +307,35 @@ To prevent context overflow and control token costs, output size caps are strict
 - **Directory Entry Limit (`list_directory`):** Truncated at **100 entries**.
 - **Path Traversal Protection:** All file paths are strictly validated (`isPathInsideWorkspace`) to prevent access outside the repository root.
 - **Command Whitelist & Chaining Protection:** Destructive commands (`rm`, `mv`, `git push`, etc.) and shell operators (redirection `>`, command chaining `;`) are blocked.
+
+---
+
+## 🔄 Provider Fallback When Tokens Run Out
+
+Set `fallback_provider` (and optionally `fallback_model`) to keep a run alive when the primary provider's token/credit allowance is spent. The classic setup is a paid Claude plan in front and Gemini behind it:
+
+```yaml
+        with:
+          provider: 'anthropic'
+          model: 'claude-sonnet-4-5'
+          fallback_provider: 'google'
+          fallback_model: 'gemini-3.6-flash'
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+```
+
+Both providers' keys must be present — the fallback is only reachable if its key is configured.
+
+**What counts as "out of tokens".** An exhausted allowance and an ordinary rate limit both arrive as HTTP 429, so the two are told apart by what the provider actually says: `insufficient_quota`, `quota exceeded`, `credit balance is too low`, `billing hard limit reached`, `usage limit reached`, and the like, plus any `402 Payment Required`. A plain "rate limit exceeded, please retry" is still treated as transient and retried with backoff, because it clears on its own.
+
+**What happens on a switch:**
+
+1. The failing request is not retried — an exhausted balance does not refill during a backoff, so retrying it only burns the retry budget before failing anyway.
+2. The request is re-issued immediately against the backup model.
+3. The switch is **sticky for the rest of the run**: every later request goes straight to the backup rather than paying another failed round trip to the primary.
+4. The run log records `🔁 anthropic/claude-sonnet-4-5 is out of tokens/quota; falling back to google/gemini-3.6-flash for the rest of this run`, and the job summary reports the model that actually did the work plus a note explaining the switch.
+
+If the backup is exhausted too — or no fallback is configured — the error propagates and the run fails, as before. A `fallback_provider`/`fallback_model` identical to the primary is ignored.
 
 ---
 

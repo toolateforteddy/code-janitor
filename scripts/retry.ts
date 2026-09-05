@@ -49,6 +49,73 @@ const RETRYABLE_MESSAGE_PATTERNS = [
     /try again/i,
 ];
 
+/**
+ * Statuses that mean "you are out of budget", not "slow down". 402 is the only status
+ * that says so on its own; an exhausted allowance otherwise arrives as a 429 and is
+ * recognized by its wording below.
+ */
+const QUOTA_STATUS_CODES = new Set([402]);
+
+/** Provider-specific error codes for an exhausted balance/quota. */
+const QUOTA_ERROR_CODES = new Set([
+    'insufficient_quota',
+    'billing_hard_limit_reached',
+    'credit_limit_exceeded',
+]);
+
+/**
+ * Phrases that separate an exhausted allowance from an ordinary rate limit. Both
+ * arrive as 429s, so the wording is the only signal: a rate limit clears on its own
+ * within seconds, an exhausted balance does not clear for the rest of the run.
+ */
+const QUOTA_MESSAGE_PATTERNS = [
+    /insufficient[_ ]quota/i,
+    /quota[_ ]exceeded/i,
+    /exceeded your (current )?quota/i,
+    /(credit|token)s? (balance )?(is |are )?(too low|exhausted|depleted)/i,
+    /credit balance is too low/i,
+    /out of (credits|tokens)/i,
+    /no (remaining )?credits/i,
+    /billing[_ ]hard[_ ]limit/i,
+    /(usage|spend|billing|daily|monthly|weekly) limits? (has |have )?(been )?(reached|exceeded)/i,
+    /exceeded your (usage|monthly|daily|weekly) limit/i,
+    /purchase (more )?credits/i,
+    /payment required/i,
+    /upgrade your plan/i,
+    /plan limit reached/i,
+];
+
+/**
+ * True when `err` says the account has run out of tokens/credits/quota rather than
+ * merely being throttled. These do not clear by waiting, so they must not be retried;
+ * they are the trigger for switching to the backup model (see fallback.ts).
+ */
+export function isQuotaExhaustedError(err: unknown, depth = 0): boolean {
+    if (!err || depth > 5) return false;
+
+    if (RetryError.isInstance(err)) {
+        return isQuotaExhaustedError(err.lastError ?? err.errors?.[err.errors.length - 1], depth + 1);
+    }
+
+    if (isApiCallError(err)) {
+        if (typeof err.statusCode === 'number' && QUOTA_STATUS_CODES.has(err.statusCode)) return true;
+        // The provider's own JSON body carries the distinguishing wording far more often
+        // than the SDK's flattened message does.
+        if (typeof err.responseBody === 'string' && matchesQuotaText(err.responseBody)) return true;
+    }
+
+    const candidate = err as { code?: unknown; type?: unknown; message?: unknown; cause?: unknown };
+    if (typeof candidate.code === 'string' && QUOTA_ERROR_CODES.has(candidate.code)) return true;
+    if (typeof candidate.type === 'string' && QUOTA_ERROR_CODES.has(candidate.type)) return true;
+    if (typeof candidate.message === 'string' && matchesQuotaText(candidate.message)) return true;
+
+    return isQuotaExhaustedError(candidate.cause, depth + 1);
+}
+
+function matchesQuotaText(text: string): boolean {
+    return QUOTA_MESSAGE_PATTERNS.some(pattern => pattern.test(text));
+}
+
 /** Cap on how long a provider-supplied `retry-after` may park us for. */
 export const MAX_RETRY_AFTER_MS = 60_000;
 
@@ -63,6 +130,11 @@ function isApiCallError(err: unknown): err is APICallError {
  */
 export function isTransientLlmError(err: unknown, depth = 0): boolean {
     if (!err || depth > 5) return false;
+
+    // An exhausted balance answers with the same 429 as a rate limit but never clears,
+    // so retrying it just burns the backoff budget before the run fails anyway.
+    // Checked once at the top level: the recursion below walks the same cause chain.
+    if (depth === 0 && isQuotaExhaustedError(err)) return false;
 
     // The SDK's own retry loop reports exhaustion as a RetryError; judge the underlying failure.
     if (RetryError.isInstance(err)) {
