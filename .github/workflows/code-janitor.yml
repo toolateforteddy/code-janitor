@@ -13,6 +13,16 @@ on:
         type: string
         required: false
         default: 'gemini-3.6-flash'
+      fallback_provider:
+        description: 'Backup AI provider used once the primary runs out of tokens/quota. Empty disables the fallback.'
+        type: string
+        required: false
+        default: ''
+      fallback_model:
+        description: 'Model ID for the backup provider. Empty uses that provider default.'
+        type: string
+        required: false
+        default: ''
       test_command:
         description: 'Command to run tests (e.g., go test ./..., cargo test, npm test)'
         type: string
@@ -182,6 +192,8 @@ jobs:
         with:
           provider: ${{ inputs.provider }}
           model: ${{ inputs.model }}
+          fallback_provider: ${{ inputs.fallback_provider }}
+          fallback_model: ${{ inputs.fallback_model }}
           test_command: ${{ inputs.test_command }}
           test_timeout: ${{ inputs.test_timeout }}
           lint_command: ${{ inputs.lint_command }}

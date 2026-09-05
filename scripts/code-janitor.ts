@@ -21,6 +21,7 @@ import {
 import {
     generateRepairProposals,
     generateFixProposals,
+    modelFallback,
 } from './ai.js';
 import { processFixes } from './pr.js';
 import { installMissingDependencies } from './deps.js';
@@ -39,7 +40,10 @@ import {
 } from './summary.js';
 
 export async function main() {
-    console.log(`🧹 Code Janitor initializing [provider: ${provider} | model: ${modelName} | mode: ${mode}]`);
+    const fallbackNote = modelFallback.hasFallback
+        ? ` | fallback: ${modelFallback.fallbackLabel}`
+        : '';
+    console.log(`🧹 Code Janitor initializing [provider: ${provider} | model: ${modelName}${fallbackNote} | mode: ${mode}]`);
     const summary = createRunSummary(provider, modelName, mode);
     setSummary(summary);
     try {

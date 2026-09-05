@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { APICallError, RetryError, NoObjectGeneratedError, NoOutputGeneratedError } from 'ai';
 import {
     isTransientLlmError,
+    isQuotaExhaustedError,
     getRetryAfterMs,
     computeBackoffMs,
     withLlmRetry,
@@ -36,6 +37,95 @@ function noObjectError(extra: { text?: string; cause?: Error } = {}) {
 }
 
 describe('retry module test suite', () => {
+
+    describe('isQuotaExhaustedError()', () => {
+
+        it('flags a 402 payment-required response', () => {
+            assert.equal(isQuotaExhaustedError(apiError(402)), true);
+        });
+
+        it('flags an exhausted Anthropic credit balance behind a 429', () => {
+            const err = apiError(429, { message: 'Your credit balance is too low to access the Anthropic API' });
+            assert.equal(isQuotaExhaustedError(err), true);
+        });
+
+        it('flags OpenAI insufficient_quota from the response body', () => {
+            const err = apiError(429, {
+                message: 'Too Many Requests',
+                responseBody: JSON.stringify({ error: { code: 'insufficient_quota', message: 'You exceeded your current quota' } }),
+            });
+            assert.equal(isQuotaExhaustedError(err), true);
+        });
+
+        it('flags a Gemini quota-exceeded message', () => {
+            assert.equal(isQuotaExhaustedError(new Error('Quota exceeded for quota metric')), true);
+        });
+
+        it('flags an insufficient_quota error code on a plain error', () => {
+            assert.equal(isQuotaExhaustedError(Object.assign(new Error('nope'), { code: 'insufficient_quota' })), true);
+        });
+
+        it('unwraps a RetryError around a quota failure', () => {
+            const quota = apiError(429, { message: 'You exceeded your current quota' });
+            const wrapped = new RetryError({ message: 'retries exhausted', reason: 'maxRetriesExceeded', errors: [quota] });
+            assert.equal(isQuotaExhaustedError(wrapped), true);
+        });
+
+        it('unwraps a cause chain', () => {
+            const outer = new Error('generation failed');
+            (outer as any).cause = new Error('billing hard limit reached');
+            assert.equal(isQuotaExhaustedError(outer), true);
+        });
+
+        it('does not flag an ordinary rate limit', () => {
+            assert.equal(isQuotaExhaustedError(apiError(429, { message: 'Rate limit exceeded, please retry' })), false);
+        });
+
+        it('does not flag a server error or a socket failure', () => {
+            assert.equal(isQuotaExhaustedError(apiError(503)), false);
+            assert.equal(isQuotaExhaustedError(Object.assign(new Error('fetch failed'), { code: 'ECONNRESET' })), false);
+        });
+
+        it('does not flag null/undefined', () => {
+            assert.equal(isQuotaExhaustedError(null), false);
+            assert.equal(isQuotaExhaustedError(undefined), false);
+        });
+    });
+
+    describe('isTransientLlmError() and exhausted quota', () => {
+
+        it('does not retry an exhausted balance even though it arrives as a 429', () => {
+            const err = apiError(429, { message: 'Your credit balance is too low to access the API' });
+            assert.equal(isTransientLlmError(err), false);
+        });
+
+        it('does not retry a 402', () => {
+            assert.equal(isTransientLlmError(apiError(402)), false);
+        });
+
+        it('still retries a plain rate limit', () => {
+            assert.equal(isTransientLlmError(apiError(429, { message: 'Rate limit exceeded' })), true);
+        });
+
+        it('withLlmRetry() fails fast on an exhausted balance', async () => {
+            let calls = 0;
+            const sleeps: number[] = [];
+            await assert.rejects(
+                withLlmRetry(async () => {
+                    calls++;
+                    throw apiError(429, { message: 'You exceeded your current quota' });
+                }, {
+                    maxRetries: 4,
+                    baseDelayMs: 1,
+                    maxDelayMs: 2,
+                    sleep: async ms => { sleeps.push(ms); },
+                }),
+                /quota/
+            );
+            assert.equal(calls, 1);
+            assert.deepEqual(sleeps, []);
+        });
+    });
 
     describe('isTransientLlmError()', () => {
 

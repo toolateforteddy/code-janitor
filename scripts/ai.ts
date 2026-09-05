@@ -25,10 +25,15 @@ import {
     llmMaxRetries,
     llmRetryBaseDelayMs,
     llmRetryMaxDelayMs,
+    fallbackProvider,
+    fallbackModelName,
+    describeModel,
 } from './config.js';
 import { applyEdits } from './edits.js';
 import { runVerification, logFailedDiff, runCmd } from './git.js';
 import { withLlmRetry } from './retry.js';
+import { ModelFallback, resolveFallbackChoice } from './fallback.js';
+import { recordNote, getSummary } from './summary.js';
 import { isTestFilePath } from './paths.js';
 
 const EDIT_FORMAT_RULE = `CHANGE FORMAT (PREFER TARGETED EDITS): For an EXISTING file, express the change as an 'edits' array of search/replace pairs: 'oldText' is a snippet copied VERBATIM from the current file content (exact indentation, enough surrounding lines to be unique in that file) and 'newText' is what replaces it. Use an empty 'newText' to delete the snippet, and set 'replaceAll' only when every occurrence should change. Do NOT echo the whole file back. For a NEW file, omit 'edits' and put the complete file body in 'updatedContent'. If you do fall back to 'updatedContent' for an existing file, it MUST be the COMPLETE file from line 1 to the end -- never abbreviate or summarize unedited code with '// ...' and never drop existing top-level functions, structs, classes, imports, macros, or types.`;
@@ -253,6 +258,32 @@ export function buildFinalizationPrompt(prompt: string, transcript: string): str
 }
 
 /**
+ * The primary model, plus the backup that takes over for the rest of the run once the
+ * primary reports an exhausted token/credit allowance. Module-level so the switch is
+ * remembered across every proposal in a run rather than re-attempted per request.
+ */
+export const modelFallback = new ModelFallback({
+    primary: { provider, model: modelName },
+    fallback: resolveFallbackChoice({ provider, model: modelName }, fallbackProvider, fallbackModelName),
+    onSwitch: ({ from, to, error }) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+            `🔁 ${describeModel(from.provider, from.model)} is out of tokens/quota; falling back to ` +
+            `${describeModel(to.provider, to.model)} for the rest of this run: ${detail}`
+        );
+        // Reflect the switch in the job summary, which otherwise reports the primary
+        // as the model that did the work.
+        const summary = getSummary();
+        summary.provider = to.provider;
+        summary.model = to.model;
+        recordNote(
+            `${describeModel(from.provider, from.model)} ran out of tokens/quota; ` +
+            `switched to ${describeModel(to.provider, to.model)} for the rest of the run.`
+        );
+    },
+});
+
+/**
  * Generates a schema-typed object from the model. `generateObject` does not accept
  * `tools`, so when workspace tools are enabled we route through `generateText` with
  * a structured `output` spec instead, letting the model call tools across multiple
@@ -264,64 +295,68 @@ async function generateStructuredWithTools<T extends z.ZodTypeAny>(
     prompt: string,
     tools: ReturnType<typeof createJanitorTools>
 ): Promise<z.infer<T>> {
-    // `maxRetries: 0` disables the SDK's own retry loop so that retrying happens in
-    // exactly one place: `withLlmRetry`, which also covers unparseable structured
-    // output and logs each attempt.
-    const retryOptions = {
-        maxRetries: llmMaxRetries,
-        baseDelayMs: llmRetryBaseDelayMs,
-        maxDelayMs: llmRetryMaxDelayMs,
-        label: `${provider}/${modelName} request`,
-    };
+    // Every request goes through the fallback so that the first "out of tokens" answer
+    // from the primary retires it and the rest of the run continues on the backup.
+    return modelFallback.run(choice => {
+        // `maxRetries: 0` disables the SDK's own retry loop so that retrying happens in
+        // exactly one place: `withLlmRetry`, which also covers unparseable structured
+        // output and logs each attempt.
+        const retryOptions = {
+            maxRetries: llmMaxRetries,
+            baseDelayMs: llmRetryBaseDelayMs,
+            maxDelayMs: llmRetryMaxDelayMs,
+            label: `${describeModel(choice.provider, choice.model)} request`,
+        };
 
-    if (tools) {
+        if (tools) {
+            return withLlmRetry(async () => {
+                const result = await generateText({
+                    model: getModel(choice.provider, choice.model),
+                    tools,
+                    stopWhen: stepCountIs(maxLlmToolSteps),
+                    system,
+                    prompt,
+                    maxRetries: 0,
+                    output: Output.object<z.infer<T>>({ schema }),
+                });
+
+                try {
+                    return result.output;
+                } catch (err) {
+                    if (!NoOutputGeneratedError.isInstance(err)) throw err;
+                    // The model spent every allowed step on tool calls and never emitted the
+                    // structured answer, so `result.output` has nothing to hand back. That is a
+                    // budgeting problem, not a failed run: re-ask once without tools, replaying
+                    // what the tools already told it, so the step budget cannot abort the sweep.
+                    console.warn(
+                        `⚠️ Model used all ${maxLlmToolSteps} tool step(s) without returning a structured answer; ` +
+                        `re-asking once without tools using the gathered tool output.`
+                    );
+                    const finalized = await generateObject({
+                        model: getModel(choice.provider, choice.model),
+                        schema,
+                        output: 'object',
+                        system,
+                        prompt: buildFinalizationPrompt(prompt, summarizeToolSteps(result.steps)),
+                        maxRetries: 0,
+                    });
+                    return finalized.object as z.infer<T>;
+                }
+            }, retryOptions);
+        }
+
         return withLlmRetry(async () => {
-            const result = await generateText({
-                model: getModel(provider, modelName),
-                tools,
-                stopWhen: stepCountIs(maxLlmToolSteps),
+            const result = await generateObject({
+                model: getModel(choice.provider, choice.model),
+                schema,
+                output: 'object',
                 system,
                 prompt,
                 maxRetries: 0,
-                output: Output.object<z.infer<T>>({ schema }),
             });
-
-            try {
-                return result.output;
-            } catch (err) {
-                if (!NoOutputGeneratedError.isInstance(err)) throw err;
-                // The model spent every allowed step on tool calls and never emitted the
-                // structured answer, so `result.output` has nothing to hand back. That is a
-                // budgeting problem, not a failed run: re-ask once without tools, replaying
-                // what the tools already told it, so the step budget cannot abort the sweep.
-                console.warn(
-                    `⚠️ Model used all ${maxLlmToolSteps} tool step(s) without returning a structured answer; ` +
-                    `re-asking once without tools using the gathered tool output.`
-                );
-                const finalized = await generateObject({
-                    model: getModel(provider, modelName),
-                    schema,
-                    output: 'object',
-                    system,
-                    prompt: buildFinalizationPrompt(prompt, summarizeToolSteps(result.steps)),
-                    maxRetries: 0,
-                });
-                return finalized.object as z.infer<T>;
-            }
+            return result.object as z.infer<T>;
         }, retryOptions);
-    }
-
-    return withLlmRetry(async () => {
-        const result = await generateObject({
-            model: getModel(provider, modelName),
-            schema,
-            output: 'object',
-            system,
-            prompt,
-            maxRetries: 0,
-        });
-        return result.object as z.infer<T>;
-    }, retryOptions);
+    });
 }
 
 
