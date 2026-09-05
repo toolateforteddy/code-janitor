@@ -349,3 +349,26 @@ If the backup is exhausted too — or no fallback is configured — the error pr
 - An over-budget proposal fails validation alongside the other integrity checks. The failure reason (with the measured counts and offending files) is fed to the auto-fix retry, which gets one chance to shrink the change; if it still exceeds the budget, the branch is discarded and no PR is opened.
 
 Set `enforce_line_budget: false` to fall back to prompt-only guidance.
+
+---
+
+## 🪞 Code Janitor Sweeps Itself
+
+This repository runs Code Janitor on its own engine, nightly at 07:00 UTC and on demand, via [`.github/workflows/janitor-self-sweep.yml`](.github/workflows/janitor-self-sweep.yml).
+
+The self sweep is deliberately different from the quickstart workflows in two ways:
+
+- **It runs the working tree, not a published ref.** The step is `uses: ./`, so every sweep exercises the action as it currently exists on the branch being swept. An engine regression shows up in our own nightly run before it reaches anyone consuming `@main`.
+- **It is scoped to the engine.** `target_path: scripts` limits analysis to the TypeScript engine, the only part of the repo a proposal can actually be verified against — `lint_command` (`npx tsc --noEmit`) and `test_command` (`npm test`) are the same checks [CI](.github/workflows/ci.yml) runs on every PR, so a proposal that breaks the build is discarded before a PR is opened. Workflow files, `node_modules`, and the npm lockfile are excluded.
+
+### Secrets
+
+| Secret | Required | Used for |
+| :--- | :--- | :--- |
+| `GEMINI_API_KEY` | Yes (with the default `provider: google`) | The primary model for scheduled sweeps. |
+| `ANTHROPIC_API_KEY` | Optional | Enables the fallback provider; without it the sweep simply stops when the primary's allowance is spent. |
+| `OPENAI_API_KEY` | Optional | Only needed if a manual run selects `provider: openai`. |
+
+### Running it manually
+
+`workflow_dispatch` accepts `provider`, `model`, `janitor_mode`, and `max_prs_per_run`, so a sweep can be pointed at a different model or restricted to `repair-only` without editing the workflow. Manual runs bypass the "no new commits" early exit, which makes them the fastest way to test an engine change end to end against a real repository.
