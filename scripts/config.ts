@@ -45,6 +45,43 @@ export const maxTestLineDiff = parseLineBudget(process.env.MAX_TEST_LINE_DIFF, 2
 // (see linebudget.ts). Set ENFORCE_LINE_BUDGET=false to go back to prompt-only.
 export const enforceLineBudget = process.env.ENFORCE_LINE_BUDGET !== 'false';
 export const reviewers = process.env.REVIEWERS || '';
+
+/**
+ * Normalizes the ASSIGNEES input into handles `gh pr create --assignee` accepts.
+ *
+ * A requested reviewer is not an assignee: GitHub's own "assigned to me" filters --
+ * which is how most people (and the mobile app) find work waiting on them -- only look
+ * at assignees, so a janitor PR with reviewers but no assignee is effectively invisible
+ * until someone browses the repo. Hence a separate input.
+ *
+ * Two shapes are rejected rather than passed through, because `gh` aborts the whole
+ * `pr create` on an assignee it cannot resolve and losing the PR is far worse than
+ * losing the assignment:
+ *  - team slugs (`my-org/my-team`): GitHub assignees are users only, teams go to `reviewers`.
+ *  - anything that is not a GitHub handle (alphanumerics and dashes), except the literal
+ *    `@me`, which `gh` resolves to the token's own user.
+ */
+export function parseAssignees(raw: string | undefined): { assignees: string[]; rejected: string[] } {
+    const assignees: string[] = [];
+    const rejected: string[] = [];
+    for (const entry of (raw || '').split(',')) {
+        const trimmed = entry.trim();
+        if (!trimmed) continue;
+        if (trimmed === '@me') {
+            if (!assignees.includes(trimmed)) assignees.push(trimmed);
+            continue;
+        }
+        const handle = trimmed.replace(/^@/, '');
+        if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(handle)) {
+            rejected.push(trimmed);
+            continue;
+        }
+        if (!assignees.includes(handle)) assignees.push(handle);
+    }
+    return { assignees, rejected };
+}
+
+export const { assignees, rejected: rejectedAssignees } = parseAssignees(process.env.ASSIGNEES);
 export const isDraft = process.env.DRAFT_PR === 'true';
 export const maxConcurrency = parseInt(process.env.MAX_CONCURRENCY || '3', 10);
 export const enableLlmTools = process.env.ENABLE_LLM_TOOLS !== 'false';
