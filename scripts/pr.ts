@@ -4,6 +4,8 @@ import * as fs from 'fs';
 import {
     isDraft,
     reviewers,
+    assignees,
+    rejectedAssignees,
     maxConcurrency,
     lintCmd,
     testCmd,
@@ -159,6 +161,10 @@ export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir:
     ];
     if (isDraft) prArgs.push('--draft');
     if (reviewers) prArgs.push('--reviewer', reviewers);
+    if (assignees.length > 0) prArgs.push('--assignee', assignees.join(','));
+    if (rejectedAssignees.length > 0) {
+        console.warn(`⚠️ Ignoring unusable assignees input: ${rejectedAssignees.join(', ')}. Assignees must be GitHub usernames (teams belong in 'reviewers').`);
+    }
 
     try {
         // Capture rather than inherit stdout: `gh pr create` prints the new PR's URL, which

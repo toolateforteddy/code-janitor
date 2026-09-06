@@ -163,6 +163,7 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 | `enforce_line_budget` | Reject proposals whose measured diff exceeds the caps above (set `false` for prompt-only guidance) | `true` |
 | `max_concurrency` | Maximum number of fixes to process in parallel (via git worktrees) per run | `3` |
 | `reviewers` | Comma-separated GitHub handles or teams to request review | `''` |
+| `assignees` | Comma-separated GitHub usernames to assign each PR to (`@me` for the token owner). Reviewers alone do not put a PR in someone's "assigned to me" queue or the GitHub mobile app; assignees do. Teams cannot be assigned. | `''` |
 | `draft_pr` | Open PRs in Draft state | `true` |
 | `janitor_mode` | Execution mode (`auto`, `repair-only`, `refactor-only`) | `'auto'` |
 | `enable_llm_tools` | Allow LLM to call workspace tools (`read_file`, `list_directory`, `run_command`) | `true` |

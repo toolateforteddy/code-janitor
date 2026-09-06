@@ -82,6 +82,10 @@ inputs:
     description: 'Comma-separated GitHub handles or teams to request review'
     required: false
     default: ''
+  assignees:
+    description: 'Comma-separated GitHub usernames to assign each PR to (use "@me" for the token owner). Unlike reviewers, assignees are what GitHub''s "assigned to me" filters and the mobile app surface, so set this if janitor PRs need to show up in someone''s queue. Teams cannot be assignees - use reviewers for those.'
+    required: false
+    default: ''
   draft_pr:
     description: 'Open PRs in Draft state'
     required: false
@@ -271,6 +275,7 @@ runs:
         ENFORCE_LINE_BUDGET: ${{ inputs.enforce_line_budget }}
         MAX_CONCURRENCY: ${{ inputs.max_concurrency }}
         REVIEWERS: ${{ inputs.reviewers }}
+        ASSIGNEES: ${{ inputs.assignees }}
         DRAFT_PR: ${{ inputs.draft_pr }}
         JANITOR_MODE: ${{ inputs.janitor_mode }}
         ENABLE_LLM_TOOLS: ${{ inputs.enable_llm_tools }}

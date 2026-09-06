@@ -12,9 +12,42 @@ import {
     parseNonNegativeInt,
     parseLineBudget,
     describeModel,
+    parseAssignees,
 } from './config.js';
 
 describe('config module test suite', () => {
+
+    describe('parseAssignees()', () => {
+        it('returns nothing for empty or missing input', () => {
+            assert.deepEqual(parseAssignees(undefined), { assignees: [], rejected: [] });
+            assert.deepEqual(parseAssignees('  , ,'), { assignees: [], rejected: [] });
+        });
+
+        it('trims, strips a leading @, and drops duplicates', () => {
+            assert.deepEqual(parseAssignees(' octocat , @octocat, hubot '), {
+                assignees: ['octocat', 'hubot'],
+                rejected: [],
+            });
+        });
+
+        it('keeps the literal @me for the token owner', () => {
+            assert.deepEqual(parseAssignees('@me'), { assignees: ['@me'], rejected: [] });
+        });
+
+        it('rejects team slugs rather than passing them to gh', () => {
+            assert.deepEqual(parseAssignees('octocat, my-org/my-team'), {
+                assignees: ['octocat'],
+                rejected: ['my-org/my-team'],
+            });
+        });
+
+        it('rejects handles GitHub could never resolve', () => {
+            assert.deepEqual(parseAssignees('bad handle, -lead, trail-, ok-1'), {
+                assignees: ['ok-1'],
+                rejected: ['bad handle', '-lead', 'trail-'],
+            });
+        });
+    });
 
     describe('getModel()', () => {
         it('returns a model object for google provider', () => {
