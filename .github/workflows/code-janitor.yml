@@ -98,6 +98,11 @@ on:
         type: string
         required: false
         default: ''
+      assignees:
+        description: 'Comma-separated GitHub usernames to assign each PR to ("@me" for the token owner). Reviewers alone do not put a PR in someone''s "assigned to me" queue or the GitHub mobile app; assignees do. Teams cannot be assigned.'
+        type: string
+        required: false
+        default: ''
       draft_pr:
         description: 'Open PRs in Draft state'
         type: boolean
@@ -209,6 +214,7 @@ jobs:
           enforce_line_budget: ${{ inputs.enforce_line_budget }}
           max_concurrency: ${{ inputs.max_concurrency }}
           reviewers: ${{ inputs.reviewers }}
+          assignees: ${{ inputs.assignees }}
           draft_pr: ${{ inputs.draft_pr }}
           janitor_mode: ${{ inputs.janitor_mode }}
           enable_llm_tools: ${{ inputs.enable_llm_tools }}
