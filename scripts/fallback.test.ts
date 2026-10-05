@@ -4,7 +4,7 @@ import { APICallError } from 'ai';
 import { ModelFallback, resolveFallbackChoice, ModelChoice } from './fallback.js';
 
 const CLAUDE: ModelChoice = { provider: 'anthropic', model: 'claude-sonnet-4-5' };
-const GEMINI: ModelChoice = { provider: 'google', model: 'gemini-3.6-flash' };
+const GEMINI: ModelChoice = { provider: 'google', model: 'gemini-3.8-flash' };
 
 function quotaError(message = 'Your credit balance is too low to access the API') {
     return new APICallError({
@@ -23,11 +23,11 @@ describe('fallback module test suite', () => {
 
     describe('resolveFallbackChoice()', () => {
         it('returns null when no fallback provider is configured', () => {
-            assert.equal(resolveFallbackChoice(CLAUDE, '', 'gemini-3.6-flash'), null);
+            assert.equal(resolveFallbackChoice(CLAUDE, '', 'gemini-3.8-flash'), null);
         });
 
         it('returns the configured provider/model pair', () => {
-            assert.deepEqual(resolveFallbackChoice(CLAUDE, 'google', 'gemini-3.6-flash'), GEMINI);
+            assert.deepEqual(resolveFallbackChoice(CLAUDE, 'google', 'gemini-3.8-flash'), GEMINI);
         });
 
         it('allows an empty model so the provider default applies', () => {
@@ -134,7 +134,7 @@ describe('fallback module test suite', () => {
 
     describe('labels', () => {
         it('describes the fallback as provider/model', () => {
-            assert.equal(silent().fallbackLabel, 'google/gemini-3.6-flash');
+            assert.equal(silent().fallbackLabel, 'google/gemini-3.8-flash');
         });
 
         it('names an empty fallback model as the provider default', () => {
