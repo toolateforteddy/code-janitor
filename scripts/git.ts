@@ -201,6 +201,45 @@ export function getGitDiff(pathSpecArgs: string, stateFilePath: string = STATE_F
 }
 
 
+/** Upper bound on the commit log + stat overview handed to the triage request. */
+export const DIFF_OVERVIEW_LIMIT = 60000;
+
+/**
+ * The cheap view of a window, for triage: one line per commit and one line per changed
+ * file with its added/removed counts, and no diff bodies.
+ */
+export function getDiffOverview(baseCommit: string, currentHead: string, pathSpecArgs: string, cwd?: string): string {
+    const execCwd = cwd || process.cwd();
+    const range = baseCommit && currentHead ? `${baseCommit}..${currentHead}` : 'HEAD~1..HEAD';
+    const opts = { encoding: 'utf-8' as const, cwd: execCwd, maxBuffer: EXEC_MAX_BUFFER };
+    let log = '';
+    let stat = '';
+    try {
+        log = execSync(`git log --no-merges --format="%h %s" ${range}`, opts).trim();
+    } catch {}
+    try {
+        // --numstat rather than --stat: --stat shortens long paths with '...', and the
+        // model has to hand the paths back exactly.
+        stat = execSync(`git diff --numstat ${range}${pathSpecArgs}`, opts).trim();
+    } catch {}
+    const overview = `Commits (${range}):\n${log || '(none listed)'}\n\nChanged files (added<TAB>removed<TAB>path):\n${stat}`;
+    return overview.length > DIFF_OVERVIEW_LIMIT
+        ? `${overview.slice(0, DIFF_OVERVIEW_LIMIT)}\n... [overview truncated at ${DIFF_OVERVIEW_LIMIT} characters]`
+        : overview;
+}
+
+/** Keeps only the per-file sections of a `git diff` whose new path is in `files`. */
+export function filterDiffToFiles(diff: string, files: string[]): string {
+    const wanted = new Set(files);
+    return diff
+        .split(/^(?=diff --git )/m)
+        .filter(section => {
+            const match = section.match(/^diff --git a\/(.+?) b\/(.+?)$/m);
+            return match !== null && wanted.has(match[2].trim());
+        })
+        .join('');
+}
+
 export function updateCursor(newHead: string, stateFilePath: string = STATE_FILE): void {
     if (!newHead) return;
     const state: JanitorState = {

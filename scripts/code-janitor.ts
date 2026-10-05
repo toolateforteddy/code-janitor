@@ -10,17 +10,22 @@ import {
     targetPath,
     excludePathsStr,
     dedupePRs,
+    triageThresholdChars,
 } from './config.js';
 import {
     runVerification,
     getDefaultBranch,
     buildPathSpecArgs,
     getGitDiff,
+    getDiffOverview,
+    filterDiffToFiles,
     updateCursor,
 } from './git.js';
 import {
     generateRepairProposals,
     generateFixProposals,
+    selectFilesForReview,
+    extractFilePathsFromDiff,
     modelFallback,
 } from './ai.js';
 import { processFixes } from './pr.js';
@@ -141,7 +146,7 @@ async function runJanitor() {
     console.log("✨ Main branch is clean. Entering REFACTOR mode...");
     summary.sweep = 'refactor';
     const pathSpecArgs = buildPathSpecArgs(targetPath, excludePathsStr);
-    const { diff: recentDiff, currentHead, failed: diffFailed } = getGitDiff(pathSpecArgs);
+    const { diff: recentDiff, currentHead, baseCommit, failed: diffFailed } = getGitDiff(pathSpecArgs);
 
     if (diffFailed) {
         // Leave the cursor where it is so the next run retries this window.
@@ -158,7 +163,25 @@ async function runJanitor() {
         return;
     }
 
-    const proposedFixes = await generateFixProposals(recentDiff, process.cwd(), existingPRContext);
+    let reviewDiff = recentDiff;
+    if (recentDiff.length > triageThresholdChars) {
+        // Too large to send whole: let the model choose from the commit log and the
+        // per-file stat, then send only the files it picked.
+        const candidates = extractFilePathsFromDiff(recentDiff);
+        console.log(`📚 Diff is ${recentDiff.length} characters across ${candidates.length} files; triaging before review.`);
+        const picked = await selectFilesForReview(getDiffOverview(baseCommit, currentHead, pathSpecArgs), candidates, existingPRContext);
+        if (picked.length === 0) {
+            recordNote(`Triage of ${candidates.length} changed files picked none worth reviewing.`);
+            if (currentHead) {
+                updateCursor(currentHead);
+            }
+            return;
+        }
+        recordNote(`Large window (${candidates.length} changed files); reviewed the ${picked.length} the model picked: ${picked.join(', ')}.`);
+        reviewDiff = filterDiffToFiles(recentDiff, picked);
+    }
+
+    const proposedFixes = await generateFixProposals(reviewDiff, process.cwd(), existingPRContext);
     const fixes = dedupePRs ? filterDuplicateProposals(proposedFixes, existingPRs, 'refactor') : proposedFixes;
     const skippedFixes = proposedFixes.length - fixes.length;
     summary.proposed = fixes.length;
