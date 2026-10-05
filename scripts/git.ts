@@ -2,6 +2,11 @@ import { execSync, execFileSync, ExecSyncOptionsWithStringEncoding } from 'child
 import * as fs from 'fs';
 import { STATE_FILE, JanitorState, FixProposal } from './config.js';
 
+// execSync's default maxBuffer is 1 MiB; past it the call throws ENOBUFS even
+// though the command succeeded. A day of commits on a busy repo, or a Gradle
+// build log, can be larger than that.
+export const EXEC_MAX_BUFFER = 256 * 1024 * 1024;
+
 export function runCmd(command: string, label: string, timeoutMs?: number, cwd?: string): { success: boolean; output: string } {
     console.log(`Running ${label} command: ${command}`);
     try {
@@ -9,6 +14,7 @@ export function runCmd(command: string, label: string, timeoutMs?: number, cwd?:
             encoding: 'utf-8',
             stdio: ['pipe', 'pipe', 'pipe'],
             cwd: cwd || process.cwd(),
+            maxBuffer: EXEC_MAX_BUFFER,
         };
         if (timeoutMs && timeoutMs > 0) {
             execOptions.timeout = timeoutMs;
@@ -146,7 +152,7 @@ export function getUncachedBaseCommit(currentHead: string, cwd?: string): string
     }
 }
 
-export function getGitDiff(pathSpecArgs: string, stateFilePath: string = STATE_FILE, cwd?: string): { diff: string; currentHead: string; baseCommit: string } {
+export function getGitDiff(pathSpecArgs: string, stateFilePath: string = STATE_FILE, cwd?: string): { diff: string; currentHead: string; baseCommit: string; failed?: boolean } {
     const execCwd = cwd || process.cwd();
     let currentHead = '';
     try {
@@ -179,19 +185,18 @@ export function getGitDiff(pathSpecArgs: string, stateFilePath: string = STATE_F
         return { diff: '', currentHead, baseCommit };
     }
 
+    const diffRange = baseCommit && currentHead ? `${baseCommit}..${currentHead}` : 'HEAD~1 HEAD';
     try {
-        const diffRange = baseCommit && currentHead ? `${baseCommit}..${currentHead}` : 'HEAD~1 HEAD';
         console.log(`🔍 Calculating diff across window: [${diffRange}]`);
-        const diff = execSync(`git diff ${diffRange}${pathSpecArgs}`, { encoding: 'utf-8', cwd: execCwd });
+        const diff = execSync(`git diff ${diffRange}${pathSpecArgs}`, { encoding: 'utf-8', cwd: execCwd, maxBuffer: EXEC_MAX_BUFFER });
         return { diff, currentHead, baseCommit };
-    } catch {
-        console.warn("Unable to fetch diff using revision range, reading current workspace diff...");
-        try {
-            const diff = execSync(`git diff${pathSpecArgs}`, { encoding: 'utf-8', cwd: execCwd });
-            return { diff, currentHead, baseCommit };
-        } catch {
-            return { diff: '', currentHead, baseCommit };
-        }
+    } catch (err: any) {
+        // Do not fall back to the working-tree diff: in CI the checkout is clean, so
+        // that reads as "nothing changed" and the caller would advance the cursor
+        // past commits nobody reviewed.
+        const reason = err?.code || (err?.stderr ? err.stderr.toString().trim() : '') || err?.message || 'unknown error';
+        console.error(`❌ Unable to compute diff for window [${diffRange}]: ${reason}`);
+        return { diff: '', currentHead, baseCommit, failed: true };
     }
 }
 
@@ -214,9 +219,9 @@ export function logFailedDiff(fix: FixProposal, workDir: string) {
     try {
         let failedDiff = '';
         try {
-            failedDiff = execSync('git diff HEAD', { encoding: 'utf-8', cwd: workDir });
+            failedDiff = execSync('git diff HEAD', { encoding: 'utf-8', cwd: workDir, maxBuffer: EXEC_MAX_BUFFER });
         } catch {
-            failedDiff = execSync('git diff', { encoding: 'utf-8', cwd: workDir });
+            failedDiff = execSync('git diff', { encoding: 'utf-8', cwd: workDir, maxBuffer: EXEC_MAX_BUFFER });
         }
         console.log(`\n=================== FAILED FIX DIFF (${fix.slug}) ===================`);
         console.log(failedDiff.trim() || '(No diff output detected)');

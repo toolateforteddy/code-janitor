@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execSync } from 'child_process';
 import { JanitorState } from './config.js';
 import {
     runCmd,
@@ -182,6 +183,42 @@ describe('git module test suite', () => {
             const diffRes = getGitDiff('', nonExistentState);
             assert.ok(diffRes.baseCommit);
             assert.equal(typeof diffRes.baseCommit, 'string');
+        });
+
+        it('returns a diff larger than execSync\'s default 1 MiB buffer', () => {
+            const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-bigdiff-'));
+            const stateFile = path.join(repo, 'state.json');
+            const git = (args: string) => execSync(`git ${args}`, { cwd: repo, stdio: 'ignore' });
+            try {
+                git('init -q');
+                git('-c user.email=t@t -c user.name=t commit -q --allow-empty -m base');
+                const base = execSync('git rev-parse HEAD', { cwd: repo, encoding: 'utf-8' }).trim();
+                fs.writeFileSync(path.join(repo, 'big.txt'), 'x'.repeat(100) + '\n'.repeat(1) + ('y'.repeat(99) + '\n').repeat(15000));
+                git('add big.txt');
+                git('-c user.email=t@t -c user.name=t commit -q -m big');
+                updateCursor(base, stateFile);
+
+                const res = getGitDiff(' -- big.txt', stateFile, repo);
+                assert.equal(res.failed, undefined);
+                assert.ok(res.diff.length > 1024 * 1024);
+            } finally {
+                fs.rmSync(repo, { recursive: true, force: true });
+            }
+        });
+
+        it('reports failure instead of an empty diff when the range cannot be diffed', () => {
+            const tempFile = path.join(os.tmpdir(), `janitor-state-test-${Date.now()}.json`);
+            try {
+                const headRes = getGitDiff('', tempFile);
+                if (headRes.currentHead) {
+                    updateCursor(`${headRes.currentHead}~1`, tempFile);
+                    const res = getGitDiff(' -- ":(bogus-magic)x"', tempFile);
+                    assert.equal(res.failed, true);
+                    assert.equal(res.diff, '');
+                }
+            } finally {
+                if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+            }
         });
     });
 

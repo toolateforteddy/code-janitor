@@ -141,7 +141,13 @@ async function runJanitor() {
     console.log("✨ Main branch is clean. Entering REFACTOR mode...");
     summary.sweep = 'refactor';
     const pathSpecArgs = buildPathSpecArgs(targetPath, excludePathsStr);
-    const { diff: recentDiff, currentHead } = getGitDiff(pathSpecArgs);
+    const { diff: recentDiff, currentHead, failed: diffFailed } = getGitDiff(pathSpecArgs);
+
+    if (diffFailed) {
+        // Leave the cursor where it is so the next run retries this window.
+        recordNote('Could not compute the diff for the analysis window; cursor left unchanged.');
+        return;
+    }
 
     if (!recentDiff.trim()) {
         console.log("No recent diff content detected. Janitor task completed.");
