@@ -46,6 +46,13 @@ export const maxTestLineDiff = parseLineBudget(process.env.MAX_TEST_LINE_DIFF, 2
 export const enforceLineBudget = process.env.ENFORCE_LINE_BUDGET !== 'false';
 export const reviewers = process.env.REVIEWERS || '';
 
+// A window whose diff is longer than this many characters is triaged first: the model
+// sees only the commit log and a per-file stat, picks up to TRIAGE_MAX_FILES files, and
+// only those files' diffs and contents go into the proposal request. A smaller window
+// is sent whole, in one request, as before.
+export const triageThresholdChars = parseLineBudget(process.env.TRIAGE_THRESHOLD_CHARS, 15000);
+export const triageMaxFiles = parseLineBudget(process.env.TRIAGE_MAX_FILES, 8);
+
 /**
  * Normalizes the ASSIGNEES input into handles `gh pr create --assignee` accepts.
  *
@@ -167,6 +174,11 @@ export const fixesResponseSchema = z.object({
 });
 
 export type FixProposal = z.infer<typeof fixProposalSchema>;
+
+export const triageResponseSchema = z.object({
+    files: z.array(z.string()).describe('Paths, exactly as listed, of the changed files most worth reviewing, best first'),
+    reason: z.string().describe('One or two sentences on why these files'),
+});
 
 export function ensureTrailingNewline(content: string): string {
     if (!content) return '\n';

@@ -2,6 +2,11 @@ import { execSync, execFileSync, ExecSyncOptionsWithStringEncoding } from 'child
 import * as fs from 'fs';
 import { STATE_FILE, JanitorState, FixProposal } from './config.js';
 
+// execSync's default maxBuffer is 1 MiB; past it the call throws ENOBUFS even
+// though the command succeeded. A day of commits on a busy repo, or a Gradle
+// build log, can be larger than that.
+export const EXEC_MAX_BUFFER = 256 * 1024 * 1024;
+
 export function runCmd(command: string, label: string, timeoutMs?: number, cwd?: string): { success: boolean; output: string } {
     console.log(`Running ${label} command: ${command}`);
     try {
@@ -9,6 +14,7 @@ export function runCmd(command: string, label: string, timeoutMs?: number, cwd?:
             encoding: 'utf-8',
             stdio: ['pipe', 'pipe', 'pipe'],
             cwd: cwd || process.cwd(),
+            maxBuffer: EXEC_MAX_BUFFER,
         };
         if (timeoutMs && timeoutMs > 0) {
             execOptions.timeout = timeoutMs;
@@ -146,7 +152,7 @@ export function getUncachedBaseCommit(currentHead: string, cwd?: string): string
     }
 }
 
-export function getGitDiff(pathSpecArgs: string, stateFilePath: string = STATE_FILE, cwd?: string): { diff: string; currentHead: string; baseCommit: string } {
+export function getGitDiff(pathSpecArgs: string, stateFilePath: string = STATE_FILE, cwd?: string): { diff: string; currentHead: string; baseCommit: string; failed?: boolean } {
     const execCwd = cwd || process.cwd();
     let currentHead = '';
     try {
@@ -179,22 +185,60 @@ export function getGitDiff(pathSpecArgs: string, stateFilePath: string = STATE_F
         return { diff: '', currentHead, baseCommit };
     }
 
+    const diffRange = baseCommit && currentHead ? `${baseCommit}..${currentHead}` : 'HEAD~1 HEAD';
     try {
-        const diffRange = baseCommit && currentHead ? `${baseCommit}..${currentHead}` : 'HEAD~1 HEAD';
         console.log(`🔍 Calculating diff across window: [${diffRange}]`);
-        const diff = execSync(`git diff ${diffRange}${pathSpecArgs}`, { encoding: 'utf-8', cwd: execCwd });
+        const diff = execSync(`git diff ${diffRange}${pathSpecArgs}`, { encoding: 'utf-8', cwd: execCwd, maxBuffer: EXEC_MAX_BUFFER });
         return { diff, currentHead, baseCommit };
-    } catch {
-        console.warn("Unable to fetch diff using revision range, reading current workspace diff...");
-        try {
-            const diff = execSync(`git diff${pathSpecArgs}`, { encoding: 'utf-8', cwd: execCwd });
-            return { diff, currentHead, baseCommit };
-        } catch {
-            return { diff: '', currentHead, baseCommit };
-        }
+    } catch (err: any) {
+        // Do not fall back to the working-tree diff: in CI the checkout is clean, so
+        // that reads as "nothing changed" and the caller would advance the cursor
+        // past commits nobody reviewed.
+        const reason = err?.code || (err?.stderr ? err.stderr.toString().trim() : '') || err?.message || 'unknown error';
+        console.error(`❌ Unable to compute diff for window [${diffRange}]: ${reason}`);
+        return { diff: '', currentHead, baseCommit, failed: true };
     }
 }
 
+
+/** Upper bound on the commit log + stat overview handed to the triage request. */
+export const DIFF_OVERVIEW_LIMIT = 60000;
+
+/**
+ * The cheap view of a window, for triage: one line per commit and one line per changed
+ * file with its added/removed counts, and no diff bodies.
+ */
+export function getDiffOverview(baseCommit: string, currentHead: string, pathSpecArgs: string, cwd?: string): string {
+    const execCwd = cwd || process.cwd();
+    const range = baseCommit && currentHead ? `${baseCommit}..${currentHead}` : 'HEAD~1..HEAD';
+    const opts = { encoding: 'utf-8' as const, cwd: execCwd, maxBuffer: EXEC_MAX_BUFFER };
+    let log = '';
+    let stat = '';
+    try {
+        log = execSync(`git log --no-merges --format="%h %s" ${range}`, opts).trim();
+    } catch {}
+    try {
+        // --numstat rather than --stat: --stat shortens long paths with '...', and the
+        // model has to hand the paths back exactly.
+        stat = execSync(`git diff --numstat ${range}${pathSpecArgs}`, opts).trim();
+    } catch {}
+    const overview = `Commits (${range}):\n${log || '(none listed)'}\n\nChanged files (added<TAB>removed<TAB>path):\n${stat}`;
+    return overview.length > DIFF_OVERVIEW_LIMIT
+        ? `${overview.slice(0, DIFF_OVERVIEW_LIMIT)}\n... [overview truncated at ${DIFF_OVERVIEW_LIMIT} characters]`
+        : overview;
+}
+
+/** Keeps only the per-file sections of a `git diff` whose new path is in `files`. */
+export function filterDiffToFiles(diff: string, files: string[]): string {
+    const wanted = new Set(files);
+    return diff
+        .split(/^(?=diff --git )/m)
+        .filter(section => {
+            const match = section.match(/^diff --git a\/(.+?) b\/(.+?)$/m);
+            return match !== null && wanted.has(match[2].trim());
+        })
+        .join('');
+}
 
 export function updateCursor(newHead: string, stateFilePath: string = STATE_FILE): void {
     if (!newHead) return;
@@ -214,9 +258,9 @@ export function logFailedDiff(fix: FixProposal, workDir: string) {
     try {
         let failedDiff = '';
         try {
-            failedDiff = execSync('git diff HEAD', { encoding: 'utf-8', cwd: workDir });
+            failedDiff = execSync('git diff HEAD', { encoding: 'utf-8', cwd: workDir, maxBuffer: EXEC_MAX_BUFFER });
         } catch {
-            failedDiff = execSync('git diff', { encoding: 'utf-8', cwd: workDir });
+            failedDiff = execSync('git diff', { encoding: 'utf-8', cwd: workDir, maxBuffer: EXEC_MAX_BUFFER });
         }
         console.log(`\n=================== FAILED FIX DIFF (${fix.slug}) ===================`);
         console.log(failedDiff.trim() || '(No diff output detected)');

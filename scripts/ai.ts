@@ -28,6 +28,8 @@ import {
     fallbackProvider,
     fallbackModelName,
     describeModel,
+    triageMaxFiles,
+    triageResponseSchema,
 } from './config.js';
 import { applyEdits } from './edits.js';
 import { runVerification, logFailedDiff, runCmd } from './git.js';
@@ -751,6 +753,43 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
     return result.fixes.slice(0, maxPRs);
 }
 
+
+/** Drops paths that are not among `candidates`, and duplicates, keeping the model's order up to `max`. */
+export function normalizeTriagePicks(files: string[], candidates: string[], max: number): string[] {
+    const known = new Set(candidates);
+    const picked: string[] = [];
+    for (const raw of files) {
+        if (picked.length >= max) break;
+        const filePath = raw.trim().replace(/^\.\//, '');
+        if (known.has(filePath) && !picked.includes(filePath)) picked.push(filePath);
+    }
+    return picked;
+}
+
+/**
+ * First turn for a window too large to send whole: the model sees the commit log and the
+ * per-file stat, and names the files it wants to review. Paths it invents are dropped, so
+ * the result is always a subset of `candidates`, at most `triageMaxFiles` long.
+ */
+export async function selectFilesForReview(overview: string, candidates: string[], existingPRContext: string = ''): Promise<string[]> {
+    const systemPrompt = `
+    You are triaging a large batch of recent changes before a detailed code review.
+    You see the commit messages and, for every changed file, how many lines were added and removed -- not the diffs themselves.
+    Pick up to ${triageMaxFiles} files whose changes are most likely to contain a bug, a missing edge case, or a worthwhile small cleanup or test.
+    Prefer production source over generated files, lockfiles, assets, and documentation. Return the paths exactly as they are listed.
+  `;
+    let promptText = overview;
+    if (existingPRContext) {
+        promptText += `\n\nPull requests the Code Janitor has ALREADY submitted (their files need no second look unless the commits changed them again):\n\n${existingPRContext}`;
+    }
+
+    console.log(`🗂️ Asking the model which of ${candidates.length} changed files to review...`);
+    const result = await generateStructuredWithTools(triageResponseSchema, systemPrompt, promptText, undefined);
+
+    const picked = normalizeTriagePicks(result.files, candidates, triageMaxFiles);
+    console.log(`  Picked ${picked.length}: ${picked.join(', ') || '(none)'}${result.reason ? ` -- ${result.reason}` : ''}`);
+    return picked;
+}
 
 export async function generateFixProposals(diff: string, workDir: string = process.cwd(), existingPRContext: string = ''): Promise<FixProposal[]> {
     const agentContexts = getAgentFilesContext(workDir);

@@ -6,6 +6,7 @@ import * as os from 'os';
 import {
     generateRepairProposals,
     extractFilePathsFromDiff,
+    normalizeTriagePicks,
     extractFilePathsFromLogs,
     getFullFileContexts,
     collectAgentFiles,
@@ -24,6 +25,18 @@ import {
 } from './ai.js';
 
 describe('ai module test suite', () => {
+
+    describe('normalizeTriagePicks()', () => {
+        const candidates = ['src/a.kt', 'src/b.kt', 'src/c.kt'];
+
+        it('keeps the model order and drops paths that are not in the window', () => {
+            assert.deepEqual(normalizeTriagePicks(['src/c.kt', 'invented.kt', './src/a.kt'], candidates, 5), ['src/c.kt', 'src/a.kt']);
+        });
+
+        it('drops duplicates and stops at the cap', () => {
+            assert.deepEqual(normalizeTriagePicks(['src/a.kt', 'src/a.kt', 'src/b.kt', 'src/c.kt'], candidates, 2), ['src/a.kt', 'src/b.kt']);
+        });
+    });
 
     describe('summarizeToolSteps() & buildFinalizationPrompt()', () => {
         it('renders tool calls and their output as a replayable transcript', () => {

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execSync } from 'child_process';
 import { JanitorState } from './config.js';
 import {
     runCmd,
@@ -10,6 +11,8 @@ import {
     getDefaultBranch,
     buildPathSpecArgs,
     getGitDiff,
+    getDiffOverview,
+    filterDiffToFiles,
     getUncachedBaseCommit,
     updateCursor,
     cleanupWorktree,
@@ -182,6 +185,87 @@ describe('git module test suite', () => {
             const diffRes = getGitDiff('', nonExistentState);
             assert.ok(diffRes.baseCommit);
             assert.equal(typeof diffRes.baseCommit, 'string');
+        });
+
+        it('returns a diff larger than execSync\'s default 1 MiB buffer', () => {
+            const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-bigdiff-'));
+            const stateFile = path.join(repo, 'state.json');
+            const git = (args: string) => execSync(`git ${args}`, { cwd: repo, stdio: 'ignore' });
+            try {
+                git('init -q');
+                git('-c user.email=t@t -c user.name=t commit -q --allow-empty -m base');
+                const base = execSync('git rev-parse HEAD', { cwd: repo, encoding: 'utf-8' }).trim();
+                fs.writeFileSync(path.join(repo, 'big.txt'), 'x'.repeat(100) + '\n'.repeat(1) + ('y'.repeat(99) + '\n').repeat(15000));
+                git('add big.txt');
+                git('-c user.email=t@t -c user.name=t commit -q -m big');
+                updateCursor(base, stateFile);
+
+                const res = getGitDiff(' -- big.txt', stateFile, repo);
+                assert.equal(res.failed, undefined);
+                assert.ok(res.diff.length > 1024 * 1024);
+            } finally {
+                fs.rmSync(repo, { recursive: true, force: true });
+            }
+        });
+
+        it('reports failure instead of an empty diff when the range cannot be diffed', () => {
+            const tempFile = path.join(os.tmpdir(), `janitor-state-test-${Date.now()}.json`);
+            try {
+                const headRes = getGitDiff('', tempFile);
+                if (headRes.currentHead) {
+                    updateCursor(`${headRes.currentHead}~1`, tempFile);
+                    const res = getGitDiff(' -- ":(bogus-magic)x"', tempFile);
+                    assert.equal(res.failed, true);
+                    assert.equal(res.diff, '');
+                }
+            } finally {
+                if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+            }
+        });
+    });
+
+    describe('filterDiffToFiles()', () => {
+        const diff = [
+            'diff --git a/src/a.kt b/src/a.kt\nindex 1..2 100644\n--- a/src/a.kt\n+++ b/src/a.kt\n@@ -1 +1 @@\n-a\n+A\n',
+            'diff --git a/src/b.kt b/src/b.kt\nindex 1..2 100644\n--- a/src/b.kt\n+++ b/src/b.kt\n@@ -1 +1 @@\n-b\n+B\n',
+            'diff --git a/old.kt b/new.kt\nsimilarity index 90%\nrename from old.kt\nrename to new.kt\n',
+        ];
+
+        it('keeps only the sections for the requested files, in diff order', () => {
+            assert.equal(filterDiffToFiles(diff.join(''), ['src/b.kt', 'src/a.kt']), diff[0] + diff[1]);
+        });
+
+        it('matches a renamed file by its new path', () => {
+            assert.equal(filterDiffToFiles(diff.join(''), ['new.kt']), diff[2]);
+        });
+
+        it('returns an empty string when nothing matches', () => {
+            assert.equal(filterDiffToFiles(diff.join(''), ['missing.kt']), '');
+        });
+    });
+
+    describe('getDiffOverview()', () => {
+        it('lists the commits and per-file counts without diff bodies', () => {
+            const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-overview-'));
+            const git = (args: string) => execSync(`git ${args}`, { cwd: repo, stdio: 'ignore' });
+            try {
+                git('init -q');
+                git('-c user.email=t@t -c user.name=t commit -q --allow-empty -m base');
+                const base = execSync('git rev-parse HEAD', { cwd: repo, encoding: 'utf-8' }).trim();
+                fs.mkdirSync(path.join(repo, 'a/very/long/directory/path/that/stat/would/shorten'), { recursive: true });
+                const longPath = 'a/very/long/directory/path/that/stat/would/shorten/File.kt';
+                fs.writeFileSync(path.join(repo, longPath), 'secret body line\n');
+                git('add .');
+                git('-c user.email=t@t -c user.name=t commit -q -m "Add the file"');
+                const head = execSync('git rev-parse HEAD', { cwd: repo, encoding: 'utf-8' }).trim();
+
+                const overview = getDiffOverview(base, head, '', repo);
+                assert.match(overview, /Add the file/);
+                assert.ok(overview.includes(`1\t0\t${longPath}`));
+                assert.ok(!overview.includes('secret body line'));
+            } finally {
+                fs.rmSync(repo, { recursive: true, force: true });
+            }
         });
     });
 
