@@ -18,6 +18,7 @@ import {
     isPathInsideWorkspace,
     isCommandAllowed,
     sanitizeRelativePath,
+    changeFormatRule,
     createJanitorTools,
     summarizeToolSteps,
     buildFinalizationPrompt,
@@ -351,6 +352,23 @@ Unresolved reference: ScribblePuzzleViewModel in ScribblePuzzleViewModel.kt: (12
             } finally {
                 fs.rmSync(tempDir, { recursive: true, force: true });
             }
+        });
+    });
+
+    describe('changeFormatRule() & sanitizeRelativePath()', () => {
+        it('returns change format rule string based on configuration', () => {
+            const rule = changeFormatRule();
+            assert.equal(typeof rule, 'string');
+            assert.ok(rule.length > 0);
+        });
+
+        it('sanitizes relative paths and rejects path traversal attempts', () => {
+            const workDir = process.cwd();
+            assert.equal(sanitizeRelativePath(workDir, 'src/index.ts'), path.normalize('src/index.ts'));
+            assert.equal(sanitizeRelativePath(workDir, './src/index.ts'), path.normalize('src/index.ts'));
+            assert.equal(sanitizeRelativePath(workDir, '../outside.ts'), null);
+            assert.equal(sanitizeRelativePath(workDir, '../../etc/passwd'), null);
+            assert.equal(sanitizeRelativePath(workDir, ''), null);
         });
     });
 
