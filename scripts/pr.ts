@@ -32,6 +32,22 @@ export function extractPrUrl(output: string): string | undefined {
 }
 
 /**
+ * Turns a failed `gh pr create` into a message that says why it failed.
+ *
+ * execFileSync's own message is just "Command failed: <argv>", which hides gh's
+ * reason, so stderr is folded in. The most common reason by far is the repository
+ * setting that stops GITHUB_TOKEN from opening PRs; it cannot be fixed from the
+ * workflow, so the message names the toggle to flip.
+ */
+export function describePrCreateFailure(stderr: string): string {
+    const reason = stderr.trim();
+    if (/not permitted to create or approve pull requests/i.test(reason)) {
+        return `${reason}\nEnable "Allow GitHub Actions to create and approve pull requests" under the repository's Settings > Actions > General > Workflow permissions. The fix branch was already pushed, so a PR can still be opened from it by hand.`;
+    }
+    return reason;
+}
+
+/**
  * Writes a proposal's file changes into `workDir` and records each file's pre-change
  * content for the integrity check.
  *
@@ -168,16 +184,18 @@ export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir:
 
     try {
         // Capture rather than inherit stdout: `gh pr create` prints the new PR's URL, which
-        // the job summary links to. stderr still streams through for progress/errors.
-        const ghOut = execFileSync('gh', prArgs, { stdio: ['pipe', 'pipe', 'inherit'], cwd: workDir, encoding: 'utf-8' });
+        // the job summary links to. stderr is captured too, so a failure can say why.
+        const ghOut = execFileSync('gh', prArgs, { stdio: ['pipe', 'pipe', 'pipe'], cwd: workDir, encoding: 'utf-8' });
         const prUrl = extractPrUrl(ghOut);
         if (ghOut.trim()) console.log(ghOut.trim());
         console.log(` Successfully created PR for: ${fix.title}`);
         recordFixResult({ slug: fix.slug, title: fix.title, modeType, outcome: 'pr-created', detail: `\`${branchName}\``, prUrl });
         return true;
     } catch (err) {
-        console.error(`❌ Failed to create pull request via GitHub CLI:`, err);
-        throw new Error(`Failed to create pull request via GitHub CLI: ${err instanceof Error ? err.message : String(err)}`);
+        const stderr = String((err as { stderr?: unknown })?.stderr ?? '');
+        const reason = describePrCreateFailure(stderr) || (err instanceof Error ? err.message : String(err));
+        console.error(`❌ Failed to create pull request for branch '${branchName}' via GitHub CLI: ${reason}`);
+        throw new Error(`Failed to create pull request for branch '${branchName}' via GitHub CLI: ${reason}`);
     }
 }
 
