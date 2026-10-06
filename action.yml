@@ -13,7 +13,7 @@ inputs:
   model:
     description: 'Model ID to execute'
     required: false
-    default: 'gemini-3.6-flash'
+    default: 'gemini-3.8-flash'
   fallback_provider:
     description: 'Backup AI provider (google, anthropic, openai) used for the rest of the run once the primary reports an exhausted token/credit allowance. Empty disables the fallback.'
     required: false

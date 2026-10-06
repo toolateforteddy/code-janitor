@@ -51,7 +51,7 @@ describe('config module test suite', () => {
 
     describe('getModel()', () => {
         it('returns a model object for google provider', () => {
-            const model = getModel('google', 'gemini-3.6-flash');
+            const model = getModel('google', 'gemini-3.8-flash');
             assert.ok(model);
             assert.equal(typeof model, 'object');
         });

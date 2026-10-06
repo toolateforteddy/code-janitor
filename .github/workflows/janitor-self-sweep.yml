@@ -18,7 +18,7 @@ on:
         description: 'Model ID to execute'
         type: string
         required: false
-        default: 'gemini-3.6-flash'
+        default: 'gemini-3.8-flash'
       janitor_mode:
         description: 'Execution mode (auto, repair-only, refactor-only)'
         type: string
@@ -47,7 +47,7 @@ jobs:
         uses: ./
         with:
           provider: ${{ inputs.provider || 'google' }}
-          model: ${{ inputs.model || 'gemini-3.6-flash' }}
+          model: ${{ inputs.model || 'gemini-3.8-flash' }}
           # Keep sweeping when the primary provider's allowance is spent, but only
           # when a key for the backup is actually configured.
           fallback_provider: ${{ secrets.ANTHROPIC_API_KEY != '' && 'anthropic' || '' }}

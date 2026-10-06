@@ -75,7 +75,7 @@ jobs:
         uses: toolateforteddy/code-janitor@main
         with:
           provider: 'google'
-          model: 'gemini-3.6-flash'
+          model: 'gemini-3.8-flash'
           test_command: 'go test ./...'
           test_timeout: 5
           janitor_mode: 'auto'
@@ -99,7 +99,7 @@ jobs:
     uses: toolateforteddy/code-janitor/.github/workflows/code-janitor.yml@main
     with:
       provider: 'google'
-      model: 'gemini-3.6-flash'
+      model: 'gemini-3.8-flash'
       test_command: 'go test ./...'
       test_timeout: 5
       janitor_mode: 'auto'
@@ -145,7 +145,7 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 | Input | Description | Default |
 | :--- | :--- | :--- |
 | `provider` | AI Provider (`google`, `anthropic`, `openai`) | `'google'` |
-| `model` | AI Model ID to execute | `'gemini-3.6-flash'` |
+| `model` | AI Model ID to execute | `'gemini-3.8-flash'` |
 | `fallback_provider` | Backup AI provider used for the rest of the run once the primary reports an exhausted token/credit allowance. Empty disables the fallback | `''` |
 | `fallback_model` | Model ID for the backup provider. Empty uses that provider's default | `''` |
 | `test_command` | Command to run tests | `'go test ./...'` |
@@ -272,7 +272,7 @@ Every run writes a markdown report to `$GITHUB_STEP_SUMMARY`, rendered at the to
 | --- | --- |
 | Mode | `auto` |
 | Sweep | 🧹 Refactor |
-| Provider / model | `google` / `gemini-3.6-flash` |
+| Provider / model | `google` / `gemini-3.8-flash` |
 | Main branch health | ✅ Green |
 | Proposals | 3 |
 | Skipped as duplicates | 2 |
@@ -320,7 +320,7 @@ Set `fallback_provider` (and optionally `fallback_model`) to keep a run alive wh
           provider: 'anthropic'
           model: 'claude-sonnet-4-5'
           fallback_provider: 'google'
-          fallback_model: 'gemini-3.6-flash'
+          fallback_model: 'gemini-3.8-flash'
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
 ```
@@ -334,7 +334,7 @@ Both providers' keys must be present — the fallback is only reachable if its k
 1. The failing request is not retried — an exhausted balance does not refill during a backoff, so retrying it only burns the retry budget before failing anyway.
 2. The request is re-issued immediately against the backup model.
 3. The switch is **sticky for the rest of the run**: every later request goes straight to the backup rather than paying another failed round trip to the primary.
-4. The run log records `🔁 anthropic/claude-sonnet-4-5 is out of tokens/quota; falling back to google/gemini-3.6-flash for the rest of this run`, and the job summary reports the model that actually did the work plus a note explaining the switch.
+4. The run log records `🔁 anthropic/claude-sonnet-4-5 is out of tokens/quota; falling back to google/gemini-3.8-flash for the rest of this run`, and the job summary reports the model that actually did the work plus a note explaining the switch.
 
 If the backup is exhausted too — or no fallback is configured — the error propagates and the run fails, as before. A `fallback_provider`/`fallback_model` identical to the primary is ignored.
 

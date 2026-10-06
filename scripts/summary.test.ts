@@ -19,7 +19,7 @@ import { extractPrUrl } from './pr.js';
 describe('summary module test suite', () => {
 
     beforeEach(() => {
-        setSummary(createRunSummary('google', 'gemini-3.6-flash', 'auto', 0));
+        setSummary(createRunSummary('google', 'gemini-3.8-flash', 'auto', 0));
     });
 
     describe('formatDuration()', () => {

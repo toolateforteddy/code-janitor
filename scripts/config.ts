@@ -10,7 +10,7 @@ if (process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
 
 // Environment Configurations
 export const provider = (process.env.AI_PROVIDER || 'google').toLowerCase();
-export const modelName = process.env.AI_MODEL || 'gemini-3.6-flash';
+export const modelName = process.env.AI_MODEL || 'gemini-3.8-flash';
 // Backup model, used only when the primary reports an exhausted token/credit
 // allowance mid-run (see fallback.ts). Empty FALLBACK_AI_PROVIDER disables it; the
 // model may be left empty to take the provider's default from getModel().
@@ -215,6 +215,6 @@ export function getModel(prov: string, mod: string) {
             return openai(mod || 'gpt-4o');
         case 'google':
         default:
-            return google(mod || 'gemini-3.6-flash');
+            return google(mod || 'gemini-3.8-flash');
     }
 }
