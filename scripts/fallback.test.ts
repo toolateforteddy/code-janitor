@@ -44,6 +44,14 @@ describe('fallback module test suite', () => {
                 model: 'claude-haiku-4-5',
             });
         });
+
+        it('treats a fallback identical to the primary as absent case-insensitively with trimmed whitespace', () => {
+            assert.equal(resolveFallbackChoice(CLAUDE, ' ANTHROPIC ', 'claude-sonnet-4-5'), null);
+        });
+
+        it('normalizes provider case and trims whitespace', () => {
+            assert.deepEqual(resolveFallbackChoice(CLAUDE, ' Google ', ' gemini-3.8-flash '), GEMINI);
+        });
     });
 
     describe('ModelFallback.run()', () => {

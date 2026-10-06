@@ -97,10 +97,13 @@ export function resolveFallbackChoice(
     fallbackProvider: string,
     fallbackModel: string
 ): ModelChoice | null {
-    if (!fallbackProvider) return null;
-    const choice = { provider: fallbackProvider, model: fallbackModel };
-    if (choice.provider === primary.provider && (choice.model || '') === (primary.model || '')) {
+    const trimmedProvider = (fallbackProvider || '').trim().toLowerCase();
+    if (!trimmedProvider) return null;
+    const trimmedModel = (fallbackModel || '').trim();
+    const primaryProvider = (primary.provider || '').trim().toLowerCase();
+    const primaryModel = (primary.model || '').trim();
+    if (trimmedProvider === primaryProvider && trimmedModel === primaryModel) {
         return null;
     }
-    return choice;
+    return { provider: trimmedProvider, model: trimmedModel };
 }
