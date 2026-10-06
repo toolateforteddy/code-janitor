@@ -367,7 +367,7 @@ export function extractFilePathsFromDiff(diff: string): string[] {
     const matches = diff.matchAll(/^diff --git a\/(.+?) b\/(.+?)$/gm);
     for (const match of matches) {
         const filePath = match[2].trim().replace(/^\.\//, '').replace(/^\/+/, '');
-        if (filePath && filePath !== '/dev/null') {
+        if (filePath && filePath !== '/dev/null' && filePath !== 'dev/null') {
             filePaths.add(filePath);
         }
     }
@@ -760,7 +760,7 @@ export function normalizeTriagePicks(files: string[], candidates: string[], max:
     const picked: string[] = [];
     for (const raw of files) {
         if (picked.length >= max) break;
-        const filePath = raw.trim().replace(/^\.\//, '');
+        const filePath = raw.trim().replace(/\\/g, '/').replace(/^\.\//, '');
         if (known.has(filePath) && !picked.includes(filePath)) picked.push(filePath);
     }
     return picked;

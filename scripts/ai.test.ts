@@ -36,6 +36,10 @@ describe('ai module test suite', () => {
         it('drops duplicates and stops at the cap', () => {
             assert.deepEqual(normalizeTriagePicks(['src/a.kt', 'src/a.kt', 'src/b.kt', 'src/c.kt'], candidates, 2), ['src/a.kt', 'src/b.kt']);
         });
+
+        it('normalizes windows backslashes in paths', () => {
+            assert.deepEqual(normalizeTriagePicks(['src\\a.kt', '.\\src\\b.kt'], candidates, 5), ['src/a.kt', 'src/b.kt']);
+        });
     });
 
     describe('summarizeToolSteps() & buildFinalizationPrompt()', () => {
@@ -79,7 +83,7 @@ describe('ai module test suite', () => {
             assert.equal(typeof generateRepairProposals, 'function');
         });
 
-        it('extracts file paths accurately from git diff output', () => {
+        it('extracts file paths accurately from git diff output and ignores dev/null', () => {
             const mockDiff = `
 diff --git a/src/auth/handlers.rs b/src/auth/handlers.rs
 index 123456..789012 100644
@@ -87,6 +91,7 @@ index 123456..789012 100644
 +++ b/src/auth/handlers.rs
 @@ -10,3 +10,3 @@
 diff --git a/src/routes/sync.rs b/src/routes/sync.rs
+diff --git a/deleted.rs b/dev/null
 `;
             const paths = extractFilePathsFromDiff(mockDiff);
             assert.deepEqual(paths, ['src/auth/handlers.rs', 'src/routes/sync.rs']);
