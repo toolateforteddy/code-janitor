@@ -167,9 +167,10 @@ export function getGitDiff(pathSpecArgs: string, stateFilePath: string = STATE_F
         try {
             const raw = fs.readFileSync(stateFilePath, 'utf-8');
             const state: JanitorState = JSON.parse(raw);
-            if (state.lastAnalyzedCommit) {
-                execSync(`git cat-file -e ${state.lastAnalyzedCommit}`, { stdio: 'ignore', cwd: execCwd });
-                baseCommit = state.lastAnalyzedCommit;
+            const commit = typeof state.lastAnalyzedCommit === 'string' ? state.lastAnalyzedCommit.trim() : '';
+            if (commit) {
+                execFileSync('git', ['cat-file', '-e', commit], { stdio: 'ignore', cwd: execCwd });
+                baseCommit = commit;
                 console.log(`📍 Found previous cursor at commit: ${baseCommit.slice(0, 7)}`);
             }
         } catch {

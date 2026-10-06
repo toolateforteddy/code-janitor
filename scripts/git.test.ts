@@ -180,6 +180,20 @@ describe('git module test suite', () => {
             }
         });
 
+        it('safely handles shell metacharacters in state file without executing commands', () => {
+            const tempFile = path.join(os.tmpdir(), `janitor-state-test-${Date.now()}.json`);
+            try {
+                const maliciousState = { lastAnalyzedCommit: 'HEAD; echo injection', lastRunTimestamp: new Date().toISOString() };
+                fs.writeFileSync(tempFile, JSON.stringify(maliciousState), 'utf-8');
+
+                const diffRes = getGitDiff('', tempFile);
+                assert.notEqual(diffRes.baseCommit, maliciousState.lastAnalyzedCommit);
+                assert.ok(diffRes.baseCommit);
+            } finally {
+                if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+            }
+        });
+
         it('uses uncached base commit determination when state file does not exist', () => {
             const nonExistentState = path.join(os.tmpdir(), `non-existent-janitor-state-${Date.now()}.json`);
             const diffRes = getGitDiff('', nonExistentState);
