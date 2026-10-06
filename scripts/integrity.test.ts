@@ -115,6 +115,14 @@ fun TopB() { /* modified */ }
             assert.equal(res.valid, true);
         });
 
+        it('rejects changes that delete more than 50% of lines in files over 25 lines', () => {
+            const original = Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n') + '\n';
+            const updated = Array.from({ length: 10 }, (_, i) => `line ${i}`).join('\n') + '\n';
+            const res = validateFixIntegrity(original, updated, 'src/large.ts');
+            assert.equal(res.valid, false);
+            assert.match(res.reason, /exceeds allowable deletion limits/);
+        });
+
         it('allows brand new files', () => {
             const res = validateFixIntegrity('', 'fun NewFun() {}', 'NewFile.kt');
             assert.equal(res.valid, true);
