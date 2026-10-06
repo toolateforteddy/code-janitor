@@ -14,7 +14,7 @@ import {
     formatDuration,
     escapeCell,
 } from './summary.js';
-import { extractPrUrl } from './pr.js';
+import { extractPrUrl, describePrCreateFailure } from './pr.js';
 
 describe('summary module test suite', () => {
 
@@ -140,6 +140,21 @@ describe('summary module test suite', () => {
             );
             assert.equal(extractPrUrl('https://ghe.example.com/o/r/pull/7'), 'https://ghe.example.com/o/r/pull/7');
             assert.equal(extractPrUrl('no url here'), undefined);
+        });
+    });
+
+    describe('describePrCreateFailure()', () => {
+        it('names the repository setting when Actions may not open PRs', () => {
+            const msg = describePrCreateFailure(
+                'pull request create failed: GraphQL: GitHub Actions is not permitted to create or approve pull requests (createPullRequest)\n',
+            );
+            assert.match(msg, /not permitted to create or approve pull requests/);
+            assert.match(msg, /Allow GitHub Actions to create and approve pull requests/);
+        });
+
+        it('passes any other gh error through trimmed', () => {
+            assert.equal(describePrCreateFailure('  HTTP 422: Validation Failed\n'), 'HTTP 422: Validation Failed');
+            assert.equal(describePrCreateFailure(''), '');
         });
     });
 });
