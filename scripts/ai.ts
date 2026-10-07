@@ -367,7 +367,7 @@ export function extractFilePathsFromDiff(diff: string): string[] {
     const matches = diff.matchAll(/^diff --git a\/(.+?) b\/(.+?)$/gm);
     for (const match of matches) {
         const filePath = match[2].trim().replace(/^\.\//, '').replace(/^\/+/, '');
-        if (filePath && filePath !== '/dev/null') {
+        if (filePath && filePath !== 'dev/null' && filePath !== '/dev/null') {
             filePaths.add(filePath);
         }
     }
