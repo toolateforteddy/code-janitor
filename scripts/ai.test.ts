@@ -87,6 +87,8 @@ index 123456..789012 100644
 +++ b/src/auth/handlers.rs
 @@ -10,3 +10,3 @@
 diff --git a/src/routes/sync.rs b/src/routes/sync.rs
+diff --git a/src/deleted.rs b/dev/null
+diff --git a/src/deleted2.rs b//dev/null
 `;
             const paths = extractFilePathsFromDiff(mockDiff);
             assert.deepEqual(paths, ['src/auth/handlers.rs', 'src/routes/sync.rs']);
