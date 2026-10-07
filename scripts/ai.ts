@@ -66,8 +66,8 @@ export function isPathInsideWorkspace(workDir: string, targetPath: string): bool
 export function sanitizeRelativePath(workDir: string, rawPath: string): string | null {
     if (!rawPath) return null;
     const cleaned = rawPath.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
-    const normalized = path.normalize(cleaned);
-    if (!cleaned || normalized.startsWith('..') || path.isAbsolute(normalized)) {
+    const normalized = path.normalize(cleaned).replace(/\\/g, '/');
+    if (!cleaned || normalized === '.' || normalized.startsWith('..') || path.isAbsolute(normalized)) {
         return null;
     }
     if (!isPathInsideWorkspace(workDir, normalized)) {
