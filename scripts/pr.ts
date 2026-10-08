@@ -27,7 +27,8 @@ import { recordFixResult } from './summary.js';
 
 /** Pull the PR URL out of `gh pr create` output, which may also carry warning lines. */
 export function extractPrUrl(output: string): string | undefined {
-    const match = (output ?? '').match(/https:\/\/\S*\/pull\/\d+/);
+    if (typeof output !== 'string') return undefined;
+    const match = output.match(/https:\/\/\S*\/pull\/\d+/);
     return match ? match[0] : undefined;
 }
 
@@ -40,7 +41,7 @@ export function extractPrUrl(output: string): string | undefined {
  * workflow, so the message names the toggle to flip.
  */
 export function describePrCreateFailure(stderr: string): string {
-    const reason = (stderr ?? '').trim();
+    const reason = (typeof stderr === 'string' ? stderr : (stderr != null ? String(stderr) : '')).trim();
     if (/not permitted to create or approve pull requests/i.test(reason)) {
         return `${reason}\nEnable "Allow GitHub Actions to create and approve pull requests" under the repository's Settings > Actions > General > Workflow permissions. The fix branch was already pushed, so a PR can still be opened from it by hand.`;
     }

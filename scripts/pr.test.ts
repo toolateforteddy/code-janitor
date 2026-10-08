@@ -123,6 +123,8 @@ describe('pr module test suite', () => {
         it('handles non-string or falsy input gracefully', () => {
             assert.equal(extractPrUrl(undefined as any), undefined);
             assert.equal(extractPrUrl(null as any), undefined);
+            assert.equal(extractPrUrl(12345 as any), undefined);
+            assert.equal(extractPrUrl({} as any), undefined);
         });
     });
 
@@ -144,6 +146,7 @@ describe('pr module test suite', () => {
             assert.equal(describePrCreateFailure(''), '');
             assert.equal(describePrCreateFailure('   \n  '), '');
             assert.equal(describePrCreateFailure(undefined as any), '');
+            assert.equal(describePrCreateFailure(new Error('resource error') as any), 'Error: resource error');
         });
     });
 });
