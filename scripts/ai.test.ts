@@ -53,6 +53,12 @@ describe('ai module test suite', () => {
             const retry = [{ filePath: 'b.ts', updatedContent: 'b' }];
             assert.deepEqual(mergeRetryChanges(current, retry), [...current, ...retry]);
         });
+
+        it('matches and dedupes files across Windows and POSIX slash styles', () => {
+            const current = [{ filePath: 'scripts/pr.ts', updatedContent: 'old' }];
+            const retry = [{ filePath: 'scripts\\pr.ts', updatedContent: 'new' }];
+            assert.deepEqual(mergeRetryChanges(current, retry), retry);
+        });
     });
 
     describe('normalizeTriagePicks()', () => {
