@@ -847,6 +847,20 @@ export async function generateFixProposals(diff: string, workDir: string = proce
     return result.fixes.slice(0, maxPRs);
 }
 
+/**
+ * The full set of files an auto-fix leaves changed: the retry's revisions, plus every file
+ * the proposal changed that the retry did not mention. The retry is free to return only
+ * the files it revised, and the ones it left out are still changed on disk, so they are
+ * part of what verification just passed. Returning only the retry's list made the commit
+ * stage a subset of the verified tree: a proposal's production edits were dropped while
+ * the tests written against them were committed.
+ */
+export function mergeRetryChanges(currentChanges: FileChange[], retryChanges: FileChange[]): FileChange[] {
+    const revised = new Set(retryChanges.map(c => path.normalize(c.filePath)));
+    const untouched = currentChanges.filter(c => !revised.has(path.normalize(c.filePath)));
+    return [...untouched, ...retryChanges];
+}
+
 export async function attemptAutoFix(
     fix: FixProposal,
     failedStep: string,
@@ -941,7 +955,7 @@ export async function attemptAutoFix(
 
         console.log(`Rerunning verification after auto-fix attempt...`);
         const verifResult = runVerification(lintCmd, testCmd, testTimeoutMs, workDir);
-        return { success: verifResult.success, updatedChanges, verifResult };
+        return { success: verifResult.success, updatedChanges: mergeRetryChanges(currentChanges, updatedChanges), verifResult };
     } catch (retryErr) {
         console.error(`Failed during auto-fix generation/execution:`, retryErr);
         return {
