@@ -856,8 +856,9 @@ export async function generateFixProposals(diff: string, workDir: string = proce
  * the tests written against them were committed.
  */
 export function mergeRetryChanges(currentChanges: FileChange[], retryChanges: FileChange[]): FileChange[] {
-    const revised = new Set(retryChanges.map(c => path.normalize(c.filePath)));
-    const untouched = currentChanges.filter(c => !revised.has(path.normalize(c.filePath)));
+    const norm = (p: string) => path.normalize(p.replace(/\\/g, '/')).replace(/\\/g, '/');
+    const revised = new Set(retryChanges.map(c => norm(c.filePath)));
+    const untouched = currentChanges.filter(c => !revised.has(norm(c.filePath)));
     return [...untouched, ...retryChanges];
 }
 
