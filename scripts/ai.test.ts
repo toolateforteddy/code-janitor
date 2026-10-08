@@ -7,6 +7,7 @@ import {
     generateRepairProposals,
     extractFilePathsFromDiff,
     normalizeTriagePicks,
+    mergeRetryChanges,
     extractFilePathsFromLogs,
     getFullFileContexts,
     collectAgentFiles,
@@ -25,6 +26,34 @@ import {
 } from './ai.js';
 
 describe('ai module test suite', () => {
+
+    describe('mergeRetryChanges()', () => {
+        it('keeps proposal files the auto-fix retry did not revise', () => {
+            // Regression: PR #24's retry returned only the test file, so the production
+            // guards it had verified against were left out of the commit.
+            const current = [
+                { filePath: 'scripts/pr.ts', updatedContent: 'guarded' },
+                { filePath: 'scripts/pr.test.ts', updatedContent: 'too many deletions' },
+            ];
+            const retry = [{ filePath: 'scripts/pr.test.ts', updatedContent: 'restored' }];
+            assert.deepEqual(mergeRetryChanges(current, retry), [
+                { filePath: 'scripts/pr.ts', updatedContent: 'guarded' },
+                { filePath: 'scripts/pr.test.ts', updatedContent: 'restored' },
+            ]);
+        });
+
+        it('lets the retry replace a file whose path is spelled differently', () => {
+            const current = [{ filePath: 'scripts/./pr.ts', updatedContent: 'old' }];
+            const retry = [{ filePath: 'scripts/pr.ts', updatedContent: 'new' }];
+            assert.deepEqual(mergeRetryChanges(current, retry), retry);
+        });
+
+        it('includes files only the retry touched', () => {
+            const current = [{ filePath: 'a.ts', updatedContent: 'a' }];
+            const retry = [{ filePath: 'b.ts', updatedContent: 'b' }];
+            assert.deepEqual(mergeRetryChanges(current, retry), [...current, ...retry]);
+        });
+    });
 
     describe('normalizeTriagePicks()', () => {
         const candidates = ['src/a.kt', 'src/b.kt', 'src/c.kt'];
