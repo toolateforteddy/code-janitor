@@ -434,6 +434,8 @@ Unresolved reference: ScribblePuzzleViewModel in ScribblePuzzleViewModel.kt: (12
 
             assert.equal(sanitizeRelativePath(workDir, '../../etc/passwd'), null);
             assert.equal(sanitizeRelativePath(workDir, '../outside.txt'), null);
+            assert.equal(sanitizeRelativePath(workDir, 'C:/windows/system32'), null);
+            assert.equal(sanitizeRelativePath(workDir, 'D:\\sensitive\\file.txt'), null);
             assert.equal(sanitizeRelativePath(workDir, ''), null);
         });
 
