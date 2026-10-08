@@ -362,6 +362,9 @@ Unresolved reference: ScribblePuzzleViewModel in ScribblePuzzleViewModel.kt: (12
             assert.equal(isPathInsideWorkspace(workDir, 'src/main.ts'), true);
             assert.equal(isPathInsideWorkspace(workDir, './package.json'), true);
             assert.equal(isPathInsideWorkspace(workDir, '../outside.txt'), false);
+            assert.equal(sanitizeRelativePath(workDir, '.'), null);
+            assert.equal(sanitizeRelativePath(workDir, './'), null);
+            assert.equal(sanitizeRelativePath(workDir, 'src/main.ts'), 'src/main.ts');
         });
 
         it('rejects sibling directories that merely share a prefix with the workspace root', () => {
