@@ -5,7 +5,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { execFileSync } from 'node:child_process';
 import { FixProposal } from './config.js';
-import { createAndSubmitPR } from './pr.js';
+import { createAndSubmitPR, extractPrUrl, describePrCreateFailure } from './pr.js';
 
 describe('pr module test suite', () => {
 
@@ -103,4 +103,47 @@ describe('pr module test suite', () => {
         });
     });
 
+    describe('extractPrUrl()', () => {
+        it('extracts PR URL from standard gh pr create output', () => {
+            const url = 'https://github.com/org/repo/pull/42';
+            assert.equal(extractPrUrl(url), url);
+            assert.equal(extractPrUrl(`${url}\n`), url);
+        });
+
+        it('extracts PR URL when output contains warnings or additional text', () => {
+            const output = 'remote: Resolving deltas: 100%\nhttps://github.com/my-org/project/pull/123\nNotice: some warning';
+            assert.equal(extractPrUrl(output), 'https://github.com/my-org/project/pull/123');
+        });
+
+        it('returns undefined when no pull request URL is found', () => {
+            assert.equal(extractPrUrl('fatal: could not create pull request'), undefined);
+            assert.equal(extractPrUrl(''), undefined);
+        });
+
+        it('handles non-string or falsy input gracefully', () => {
+            assert.equal(extractPrUrl(undefined as any), undefined);
+            assert.equal(extractPrUrl(null as any), undefined);
+        });
+    });
+
+    describe('describePrCreateFailure()', () => {
+        it('adds permissions hint when stderr indicates pull request creation not permitted', () => {
+            const stderr = 'GraphQL: Resource not permitted to create or approve pull requests (createPullRequest)';
+            const described = describePrCreateFailure(stderr);
+            assert.match(described, /Enable "Allow GitHub Actions to create and approve pull requests"/);
+            assert.match(described, /Workflow permissions/);
+            assert.ok(described.startsWith(stderr));
+        });
+
+        it('trims and returns regular failure messages untouched', () => {
+            const stderr = '  GraphQL: A pull request already exists for branch.  \n';
+            assert.equal(describePrCreateFailure(stderr), 'GraphQL: A pull request already exists for branch.');
+        });
+
+        it('handles empty or falsy stderr gracefully', () => {
+            assert.equal(describePrCreateFailure(''), '');
+            assert.equal(describePrCreateFailure('   \n  '), '');
+            assert.equal(describePrCreateFailure(undefined as any), '');
+        });
+    });
 });
