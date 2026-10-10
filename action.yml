@@ -185,6 +185,26 @@ runs:
             echo "has_prs=false" >> $GITHUB_OUTPUT
             exit 0
           fi
+          if [ -n "$LAST_COMMIT" ] && git cat-file -e "$LAST_COMMIT^{commit}" 2>/dev/null; then
+            # The janitor's own merged PRs are not new work. Same test as isJanitorCommit()
+            # in scripts/git.ts: authored by the janitor (merge commit, rebase), or carrying
+            # its trailer or GitHub's Co-authored-by line for it (squash-merge).
+            OTHER_COMMIT=""
+            for SHA in $(git rev-list --no-merges "$LAST_COMMIT..HEAD"); do
+              EMAIL=$(git show -s --format=%ae "$SHA" | tr '[:upper:]' '[:lower:]')
+              [ "$EMAIL" = "bot@codejanitor.local" ] && continue
+              MESSAGE=$(git show -s --format=%B "$SHA")
+              echo "$MESSAGE" | grep -qE '^[[:space:]]*Code-Janitor: (refactor|repair)[[:space:]]*$' && continue
+              echo "$MESSAGE" | grep -qiE '^[[:space:]]*Co-authored-by:.*<bot@codejanitor\.local>' && continue
+              OTHER_COMMIT="$SHA"
+              break
+            done
+            if [ -z "$OTHER_COMMIT" ]; then
+              echo "Only the janitor's own commits since cursor commit ($LAST_COMMIT). Exiting early."
+              echo "has_prs=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
           if [ -n "$LAST_COMMIT" ]; then
             echo "New commits detected since cursor commit ($LAST_COMMIT)."
             echo "has_prs=true" >> $GITHUB_OUTPUT

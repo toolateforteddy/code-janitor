@@ -6,6 +6,7 @@ import * as os from 'os';
 import { execFileSync } from 'node:child_process';
 import { FixProposal } from './config.js';
 import { createAndSubmitPR, extractPrUrl, describePrCreateFailure } from './pr.js';
+import { isJanitorCommit } from './git.js';
 
 describe('pr module test suite', () => {
 
@@ -97,6 +98,12 @@ describe('pr module test suite', () => {
                 // must contain the resolved path, not the original wrong one.
                 const committedFiles = execFileSync('git', ['diff-tree', '--no-commit-id', '--name-only', '-r', '--root', 'HEAD'], { cwd: tempDir, encoding: 'utf-8' }).trim();
                 assert.equal(committedFiles, 'actual-remapped-path.txt');
+
+                // Marked as the janitor's own, so a later sweep does not review it again.
+                const authorEmail = execFileSync('git', ['log', '-1', '--format=%ae'], { cwd: tempDir, encoding: 'utf-8' }).trim();
+                const message = execFileSync('git', ['log', '-1', '--format=%B'], { cwd: tempDir, encoding: 'utf-8' });
+                assert.equal(isJanitorCommit(authorEmail, message), true);
+                assert.match(message, /^Code-Janitor: refactor$/m);
             } finally {
                 fs.rmSync(tempDir, { recursive: true, force: true });
             }

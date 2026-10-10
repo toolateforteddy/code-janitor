@@ -121,6 +121,16 @@ export const STATE_FILE = '.janitor-state.json';
 /** Prefix for every branch the janitor creates; also how its own PRs are recognized later. */
 export const JANITOR_BRANCH_PREFIX = 'janitor/';
 
+/** Author email on every commit the janitor makes; how a merged or rebased janitor commit is recognized. */
+export const JANITOR_AUTHOR_EMAIL = 'bot@codejanitor.local';
+
+/**
+ * Trailer key on every janitor commit message and PR body. A squash-merge replaces the
+ * commit's author with the PR's opener, so the trailer is what survives it: GitHub builds
+ * the squashed message from either the commit messages or the PR body, and both carry it.
+ */
+export const JANITOR_TRAILER = 'Code-Janitor';
+
 export interface JanitorState {
     lastAnalyzedCommit: string;
     lastRunTimestamp: string;

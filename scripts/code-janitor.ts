@@ -146,7 +146,7 @@ async function runJanitor() {
     console.log("✨ Main branch is clean. Entering REFACTOR mode...");
     summary.sweep = 'refactor';
     const pathSpecArgs = buildPathSpecArgs(targetPath, excludePathsStr);
-    const { diff: recentDiff, currentHead, baseCommit, failed: diffFailed } = getGitDiff(pathSpecArgs);
+    const { diff: recentDiff, currentHead, baseCommit, failed: diffFailed, janitorCommits } = getGitDiff(pathSpecArgs);
 
     if (diffFailed) {
         // Leave the cursor where it is so the next run retries this window.
@@ -156,7 +156,9 @@ async function runJanitor() {
 
     if (!recentDiff.trim()) {
         console.log("No recent diff content detected. Janitor task completed.");
-        recordNote('No recent diff content in the analysis window; nothing to review.');
+        recordNote(janitorCommits
+            ? `Only the janitor's own commits (${janitorCommits}) in the analysis window, or none outside them in scope; nothing to review.`
+            : 'No recent diff content in the analysis window; nothing to review.');
         if (currentHead) {
             updateCursor(currentHead);
         }

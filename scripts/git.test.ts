@@ -16,6 +16,8 @@ import {
     getUncachedBaseCommit,
     updateCursor,
     cleanupWorktree,
+    isJanitorCommit,
+    partitionWindowCommits,
 } from './git.js';
 
 describe('git module test suite', () => {
@@ -220,6 +222,117 @@ describe('git module test suite', () => {
                 }
             } finally {
                 if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+            }
+        });
+    });
+
+    describe('isJanitorCommit()', () => {
+        it('recognizes the janitor as author, whatever the case', () => {
+            assert.equal(isJanitorCommit('bot@codejanitor.local', 'refactor: x'), true);
+            assert.equal(isJanitorCommit('Bot@CodeJanitor.local', 'refactor: x'), true);
+        });
+
+        it('recognizes a squash-merge by its trailer or the janitor as co-author', () => {
+            assert.equal(isJanitorCommit('41898282+github-actions[bot]@users.noreply.github.com', '🧹 Tidy x (#12)\n\nBody\n\nCode-Janitor: refactor\n'), true);
+            assert.equal(isJanitorCommit('me@example.com', 'Fix (#3)\n\n* fix: y\n\nCo-authored-by: Code Janitor Bot <bot@codejanitor.local>'), true);
+        });
+
+        it('does not mistake a person writing about the janitor for the janitor', () => {
+            assert.equal(isJanitorCommit('me@example.com', 'Code janitor: move to a new model'), false);
+            assert.equal(isJanitorCommit('me@example.com', 'Code-Janitor: please ignore my commits too'), false);
+            assert.equal(isJanitorCommit('me@example.com', 'Mention bot@codejanitor.local in docs'), false);
+        });
+    });
+
+    describe('getGitDiff() and the janitor\'s own commits', () => {
+        const setUpRepo = () => {
+            const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-own-'));
+            const git = (args: string) => execSync(`git ${args}`, { cwd: repo, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+            const human = '-c user.email=me@example.com -c user.name=me';
+            const bot = '-c user.email=bot@codejanitor.local -c user.name="Code Janitor Bot"';
+            const write = (file: string, text: string) => fs.writeFileSync(path.join(repo, file), text);
+            git('init -q -b main');
+            write('a.txt', 'a\n');
+            write('b.txt', 'b\n');
+            git('add .');
+            git(`${human} commit -q -m base`);
+            const base = git('rev-parse HEAD');
+            const stateFile = path.join(repo, '.janitor-state.json');
+            updateCursor(base, stateFile);
+            return { repo, git, human, bot, write, base, stateFile };
+        };
+
+        it('finds nothing to review when every commit since the cursor is the janitor\'s', () => {
+            const { repo, git, human, bot, write, stateFile } = setUpRepo();
+            try {
+                // A janitor PR merged with a merge commit by a person.
+                git('switch -q -c janitor/one');
+                write('a.txt', 'a tidied\n');
+                git(`${bot} commit -q -am "refactor: tidy a" -m "Code-Janitor: refactor"`);
+                git('switch -q main');
+                git(`${human} merge -q --no-ff janitor/one -m "Merge pull request #1 from o/janitor/one"`);
+                // A janitor PR squash-merged: a person's authorship, the trailer kept.
+                write('b.txt', 'b tidied\n');
+                git(`${human} commit -q -am "🧹 Tidy b (#2)" -m "Code-Janitor: refactor"`);
+
+                const res = getGitDiff('', stateFile, repo);
+                assert.equal(res.diff, '');
+                assert.equal(res.janitorCommits, 2);
+                assert.equal(res.failed, undefined);
+            } finally {
+                fs.rmSync(repo, { recursive: true, force: true });
+            }
+        });
+
+        it('keeps the files somebody else touched when the window is mixed', () => {
+            const { repo, git, human, bot, write, stateFile } = setUpRepo();
+            try {
+                write('a.txt', 'a by the janitor\n');
+                git(`${bot} commit -q -am "refactor: tidy a"`);
+                write('b.txt', 'b by a person\n');
+                git(`${human} commit -q -am "Change b"`);
+
+                const res = getGitDiff('', stateFile, repo);
+                assert.equal(res.janitorCommits, 1);
+                assert.match(res.diff, /^diff --git a\/b\.txt b\/b\.txt$/m);
+                assert.ok(!res.diff.includes('a.txt'));
+            } finally {
+                fs.rmSync(repo, { recursive: true, force: true });
+            }
+        });
+
+        it('leaves a window with no janitor commits as it was', () => {
+            const { repo, git, human, write, stateFile } = setUpRepo();
+            try {
+                write('a.txt', 'a by a person\n');
+                git(`${human} commit -q -am "Change a"`);
+
+                const res = getGitDiff('', stateFile, repo);
+                assert.equal(res.janitorCommits, undefined);
+                assert.match(res.diff, /a by a person/);
+            } finally {
+                fs.rmSync(repo, { recursive: true, force: true });
+            }
+        });
+
+        it('partitions commits, skipping merges', () => {
+            const { repo, git, human, bot, write, base } = setUpRepo();
+            try {
+                git('switch -q -c janitor/one');
+                write('a.txt', 'a tidied\n');
+                git(`${bot} commit -q -am "refactor: tidy a"`);
+                git('switch -q main');
+                write('b.txt', 'b by a person\n');
+                git(`${human} commit -q -am "Change b"`);
+                git(`${human} merge -q --no-ff janitor/one -m "Merge janitor/one"`);
+
+                const parts = partitionWindowCommits(`${base}..HEAD`, repo);
+                assert.ok(parts);
+                assert.equal(parts.janitor.length, 1);
+                assert.equal(parts.others.length, 1);
+                assert.equal(partitionWindowCommits('no-such-ref..HEAD', repo), null);
+            } finally {
+                fs.rmSync(repo, { recursive: true, force: true });
             }
         });
     });

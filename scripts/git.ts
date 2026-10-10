@@ -1,6 +1,6 @@
 import { execSync, execFileSync, ExecSyncOptionsWithStringEncoding } from 'child_process';
 import * as fs from 'fs';
-import { STATE_FILE, JanitorState, FixProposal } from './config.js';
+import { STATE_FILE, JanitorState, FixProposal, JANITOR_AUTHOR_EMAIL, JANITOR_TRAILER } from './config.js';
 
 // execSync's default maxBuffer is 1 MiB; past it the call throws ENOBUFS even
 // though the command succeeded. A day of commits on a busy repo, or a Gradle
@@ -152,7 +152,84 @@ export function getUncachedBaseCommit(currentHead: string, cwd?: string): string
     }
 }
 
-export function getGitDiff(pathSpecArgs: string, stateFilePath: string = STATE_FILE, cwd?: string): { diff: string; currentHead: string; baseCommit: string; failed?: boolean } {
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const JANITOR_TRAILER_PATTERN = new RegExp(`^\\s*${escapeRegExp(JANITOR_TRAILER)}: (refactor|repair)\\s*$`, 'm');
+const JANITOR_CO_AUTHOR_PATTERN = new RegExp(`^\\s*Co-authored-by:.*<${escapeRegExp(JANITOR_AUTHOR_EMAIL)}>`, 'im');
+
+/**
+ * Whether a commit is the janitor's own work landing back on the branch it sweeps.
+ * A merge commit or a rebase keeps the janitor as author; a squash-merge does not, but
+ * keeps the trailer (or GitHub's Co-authored-by line for the janitor) in its message.
+ */
+export function isJanitorCommit(authorEmail: string, message: string): boolean {
+    return authorEmail.trim().toLowerCase() === JANITOR_AUTHOR_EMAIL
+        || JANITOR_TRAILER_PATTERN.test(message)
+        || JANITOR_CO_AUTHOR_PATTERN.test(message);
+}
+
+/**
+ * Splits the non-merge commits in `range` into the janitor's and everyone else's.
+ * Merge commits carry no work of their own here: a janitor PR merged with a merge
+ * commit is judged by the janitor commits it brings in. Returns null when the
+ * commits cannot be listed, so the caller reviews the whole window rather than
+ * silently dropping someone's work.
+ */
+export function partitionWindowCommits(range: string, cwd?: string): { janitor: string[]; others: string[] } | null {
+    let log: string;
+    try {
+        log = execFileSync('git', ['log', '--no-merges', '--format=%H%x1f%ae%x1f%B%x1e', range], {
+            encoding: 'utf-8',
+            stdio: ['pipe', 'pipe', 'pipe'],
+            cwd: cwd || process.cwd(),
+            maxBuffer: EXEC_MAX_BUFFER,
+        });
+    } catch {
+        return null;
+    }
+    const janitor: string[] = [];
+    const others: string[] = [];
+    for (const record of log.split('\x1e')) {
+        const [sha, email = '', message = ''] = record.replace(/^\s+/, '').split('\x1f');
+        if (!sha) continue;
+        (isJanitorCommit(email, message) ? janitor : others).push(sha);
+    }
+    return { janitor, others };
+}
+
+/** Every path the given commits touched, by its path after the commit. */
+function filesTouchedBy(shas: string[], cwd: string): string[] {
+    const out = execFileSync('git', ['show', '--no-renames', '--format=', '--name-only', '-z', ...shas], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        cwd,
+        maxBuffer: EXEC_MAX_BUFFER,
+    });
+    return [...new Set(out.split('\0').map(f => f.trim()).filter(Boolean))];
+}
+
+/**
+ * Drops the janitor's own commits from a window's diff. Only the janitor's commits:
+ * empty diff. A mix: the window's diff, kept to the files somebody else touched, so the
+ * review still sees those files as they now stand.
+ */
+function excludeJanitorWork(diff: string, range: string, cwd: string): { diff: string; janitorCommits: number } {
+    const commits = partitionWindowCommits(range, cwd);
+    if (!commits || commits.janitor.length === 0) return { diff, janitorCommits: 0 };
+    const janitorCommits = commits.janitor.length;
+    if (commits.others.length === 0) {
+        console.log(`🤖 All ${janitorCommits} commit(s) in the window are the janitor's own; nothing to review.`);
+        return { diff: '', janitorCommits };
+    }
+    try {
+        const files = filesTouchedBy(commits.others, cwd);
+        console.log(`🤖 Ignoring ${janitorCommits} janitor commit(s); reviewing the ${files.length} file(s) touched by the other ${commits.others.length}.`);
+        return { diff: filterDiffToFiles(diff, files), janitorCommits };
+    } catch {
+        return { diff, janitorCommits: 0 };
+    }
+}
+
+export function getGitDiff(pathSpecArgs: string, stateFilePath: string = STATE_FILE, cwd?: string): { diff: string; currentHead: string; baseCommit: string; failed?: boolean; janitorCommits?: number } {
     const execCwd = cwd || process.cwd();
     let currentHead = '';
     try {
@@ -189,7 +266,9 @@ export function getGitDiff(pathSpecArgs: string, stateFilePath: string = STATE_F
     try {
         console.log(`🔍 Calculating diff across window: [${diffRange}]`);
         const diff = execSync(`git diff ${diffRange}${pathSpecArgs}`, { encoding: 'utf-8', cwd: execCwd, maxBuffer: EXEC_MAX_BUFFER });
-        return { diff, currentHead, baseCommit };
+        if (!diff.trim() || !(baseCommit && currentHead)) return { diff, currentHead, baseCommit };
+        const own = excludeJanitorWork(diff, diffRange, execCwd);
+        return own.janitorCommits > 0 ? { diff: own.diff, currentHead, baseCommit, janitorCommits: own.janitorCommits } : { diff, currentHead, baseCommit };
     } catch (err: any) {
         // Do not fall back to the working-tree diff: in CI the checkout is clean, so
         // that reads as "nothing changed" and the caller would advance the cursor
