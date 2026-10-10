@@ -153,7 +153,7 @@ export function getUncachedBaseCommit(currentHead: string, cwd?: string): string
 }
 
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const JANITOR_TRAILER_PATTERN = new RegExp(`^\\s*${escapeRegExp(JANITOR_TRAILER)}: (refactor|repair)\\s*$`, 'm');
+const JANITOR_TRAILER_PATTERN = new RegExp(`^\\s*${escapeRegExp(JANITOR_TRAILER)}: (refactor|repair)\\s*$`, 'im');
 const JANITOR_CO_AUTHOR_PATTERN = new RegExp(`^\\s*Co-authored-by:.*<${escapeRegExp(JANITOR_AUTHOR_EMAIL)}>`, 'im');
 
 /**
@@ -162,9 +162,11 @@ const JANITOR_CO_AUTHOR_PATTERN = new RegExp(`^\\s*Co-authored-by:.*<${escapeReg
  * keeps the trailer (or GitHub's Co-authored-by line for the janitor) in its message.
  */
 export function isJanitorCommit(authorEmail: string, message: string): boolean {
-    return authorEmail.trim().toLowerCase() === JANITOR_AUTHOR_EMAIL
-        || JANITOR_TRAILER_PATTERN.test(message)
-        || JANITOR_CO_AUTHOR_PATTERN.test(message);
+    const cleanEmail = typeof authorEmail === 'string' ? authorEmail.trim().toLowerCase() : '';
+    const cleanMessage = typeof message === 'string' ? message : '';
+    return cleanEmail === JANITOR_AUTHOR_EMAIL
+        || JANITOR_TRAILER_PATTERN.test(cleanMessage)
+        || JANITOR_CO_AUTHOR_PATTERN.test(cleanMessage);
 }
 
 /**
@@ -189,8 +191,11 @@ export function partitionWindowCommits(range: string, cwd?: string): { janitor: 
     const janitor: string[] = [];
     const others: string[] = [];
     for (const record of log.split('\x1e')) {
-        const [sha, email = '', message = ''] = record.replace(/^\s+/, '').split('\x1f');
+        const parts = record.replace(/^\s+/, '').split('\x1f');
+        const sha = parts[0];
         if (!sha) continue;
+        const email = parts[1] || '';
+        const message = parts.slice(2).join('\x1f');
         (isJanitorCommit(email, message) ? janitor : others).push(sha);
     }
     return { janitor, others };
@@ -198,6 +203,7 @@ export function partitionWindowCommits(range: string, cwd?: string): { janitor: 
 
 /** Every path the given commits touched, by its path after the commit. */
 function filesTouchedBy(shas: string[], cwd: string): string[] {
+    if (shas.length === 0) return [];
     const out = execFileSync('git', ['show', '--no-renames', '--format=', '--name-only', '-z', ...shas], {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -313,8 +319,9 @@ export function filterDiffToFiles(diff: string, files: string[]): string {
     return diff
         .split(/^(?=diff --git )/m)
         .filter(section => {
-            const match = section.match(/^diff --git a\/(.+?) b\/(.+?)$/m);
-            return match !== null && wanted.has(match[2].trim());
+            const match = section.match(/^diff --git (?:a\/(.+?)|\"a\/(.+?)\") (?:b\/(.+?)|\"b\/(.+?)\")\r?$/m);
+            const target = (match?.[3] ?? match?.[4])?.trim();
+            return target !== undefined && wanted.has(target);
         })
         .join('');
 }
