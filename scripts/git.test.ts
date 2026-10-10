@@ -237,6 +237,17 @@ describe('git module test suite', () => {
             assert.equal(isJanitorCommit('me@example.com', 'Fix (#3)\n\n* fix: y\n\nCo-authored-by: Code Janitor Bot <bot@codejanitor.local>'), true);
         });
 
+        it('recognizes trailer with case variations', () => {
+            assert.equal(isJanitorCommit('me@example.com', 'Fix (#3)\n\nCode-Janitor: Refactor'), true);
+            assert.equal(isJanitorCommit('me@example.com', 'Fix (#3)\n\ncode-janitor: repair'), true);
+        });
+
+        it('handles non-string or falsy input gracefully', () => {
+            assert.equal(isJanitorCommit(undefined as any, 'refactor: x'), false);
+            assert.equal(isJanitorCommit('bot@codejanitor.local', undefined as any), true);
+            assert.equal(isJanitorCommit(null as any, null as any), false);
+        });
+
         it('does not mistake a person writing about the janitor for the janitor', () => {
             assert.equal(isJanitorCommit('me@example.com', 'Code janitor: move to a new model'), false);
             assert.equal(isJanitorCommit('me@example.com', 'Code-Janitor: please ignore my commits too'), false);
@@ -354,6 +365,11 @@ describe('git module test suite', () => {
 
         it('returns an empty string when nothing matches', () => {
             assert.equal(filterDiffToFiles(diff.join(''), ['missing.kt']), '');
+        });
+
+        it('matches quoted diff header paths', () => {
+            const quotedDiff = 'diff --git \"a/my file.kt\" \"b/my file.kt\"\nindex 1..2 100644\n--- \"a/my file.kt\"\n+++ \"b/my file.kt\"\n@@ -1 +1 @@\n-a\n+A\n';
+            assert.equal(filterDiffToFiles(quotedDiff, ['my file.kt']), quotedDiff);
         });
     });
 
