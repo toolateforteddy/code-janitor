@@ -16,6 +16,8 @@ import {
     getProposalChanges,
     isEditBasedChange,
     JANITOR_BRANCH_PREFIX,
+    JANITOR_AUTHOR_EMAIL,
+    JANITOR_TRAILER,
 } from './config.js';
 import { applyEdits } from './edits.js';
 import { runVerification, logFailedDiff, cleanupWorktree } from './git.js';
@@ -130,7 +132,7 @@ export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir:
 
     try {
         execFileSync('git', ['config', 'user.name', 'Code Janitor Bot'], execOpts);
-        execFileSync('git', ['config', 'user.email', 'bot@codejanitor.local'], execOpts);
+        execFileSync('git', ['config', 'user.email', JANITOR_AUTHOR_EMAIL], execOpts);
         for (const change of changes) {
             if (change.filePath) {
                 const cleanPath = sanitizeRelativePath(workDir, change.filePath);
@@ -155,7 +157,7 @@ export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir:
         }
 
         const commitMessage = `${prPrefix}: ${fix.title}`;
-        execFileSync('git', ['commit', '-m', commitMessage], execOpts);
+        execFileSync('git', ['commit', '-m', commitMessage, '-m', `${JANITOR_TRAILER}: ${modeType}`], execOpts);
     } catch (err) {
         console.error(`❌ Failed to commit changes for branch '${branchName}':`, err);
         throw new Error(`Failed to commit changes for branch '${branchName}': ${err instanceof Error ? err.message : String(err)}`);
@@ -173,7 +175,7 @@ export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir:
     const prArgs = [
         'pr', 'create',
         '--title', `${emoji} ${fix.title}`,
-        '--body', `${fix.description}\n\n_Generated automatically by Code Janitor [${modeType.toUpperCase()} mode]_`,
+        '--body', `${fix.description}\n\n_Generated automatically by Code Janitor [${modeType.toUpperCase()} mode]_\n\n${JANITOR_TRAILER}: ${modeType}`,
         '--head', branchName
     ];
     if (isDraft) prArgs.push('--draft');
