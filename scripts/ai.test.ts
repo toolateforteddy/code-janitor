@@ -114,6 +114,13 @@ describe('ai module test suite', () => {
             assert.equal(typeof generateRepairProposals, 'function');
         });
 
+        it('handles non-string diff or log inputs gracefully', () => {
+            assert.deepEqual(extractFilePathsFromDiff(undefined as any), []);
+            assert.deepEqual(extractFilePathsFromDiff(null as any), []);
+            assert.deepEqual(extractFilePathsFromLogs(undefined as any), []);
+            assert.deepEqual(extractFilePathsFromLogs(null as any), []);
+        });
+
         it('extracts file paths accurately from git diff output', () => {
             const mockDiff = `
 diff --git a/src/auth/handlers.rs b/src/auth/handlers.rs
@@ -400,6 +407,10 @@ Unresolved reference: ScribblePuzzleViewModel in ScribblePuzzleViewModel.kt: (12
             assert.equal(sanitizeRelativePath(workDir, '.'), null);
             assert.equal(sanitizeRelativePath(workDir, './'), null);
             assert.equal(sanitizeRelativePath(workDir, 'src/main.ts'), 'src/main.ts');
+
+            const rootDir = path.parse(workDir).root;
+            assert.equal(isPathInsideWorkspace(rootDir, 'src/main.ts'), true);
+            assert.equal(isPathInsideWorkspace(rootDir, '.'), true);
         });
 
         it('rejects sibling directories that merely share a prefix with the workspace root', () => {
@@ -422,6 +433,9 @@ Unresolved reference: ScribblePuzzleViewModel in ScribblePuzzleViewModel.kt: (12
             assert.equal(isCommandAllowed('git push origin main'), false);
             assert.equal(isCommandAllowed('cat src/index.ts > file.txt'), false);
             assert.equal(isCommandAllowed('ls; rm -rf .'), false);
+            assert.equal(isCommandAllowed(undefined as any), false);
+            assert.equal(isCommandAllowed(null as any), false);
+            assert.equal(isCommandAllowed(12345 as any), false);
         });
 
         it('rejects command chaining and substitution operators beyond ";" and ">"', () => {
@@ -442,7 +456,12 @@ Unresolved reference: ScribblePuzzleViewModel in ScribblePuzzleViewModel.kt: (12
             assert.equal(sanitizeRelativePath(workDir, '../outside.txt'), null);
             assert.equal(sanitizeRelativePath(workDir, 'C:/windows/system32'), null);
             assert.equal(sanitizeRelativePath(workDir, 'D:\\sensitive\\file.txt'), null);
+            assert.equal(sanitizeRelativePath(workDir, 'C:file.txt'), null);
             assert.equal(sanitizeRelativePath(workDir, ''), null);
+            assert.equal(sanitizeRelativePath(workDir, undefined as any), null);
+            assert.equal(sanitizeRelativePath(workDir, null as any), null);
+            assert.equal(sanitizeRelativePath(workDir, 12345 as any), null);
+            assert.equal(sanitizeRelativePath(workDir, {} as any), null);
         });
 
         it('executes read_file tool with logging and output truncation', async () => {

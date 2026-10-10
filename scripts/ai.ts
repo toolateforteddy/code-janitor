@@ -56,7 +56,8 @@ const NON_TRIVIAL_SUFFIX = `Do NOT output a proposal whose changes leave the fil
 export function isPathInsideWorkspace(workDir: string, targetPath: string): boolean {
     const absWorkDir = path.resolve(workDir).toLowerCase();
     const absTarget = path.resolve(workDir, targetPath).toLowerCase();
-    return absTarget === absWorkDir || absTarget.startsWith(absWorkDir + path.sep);
+    const prefix = absWorkDir.endsWith(path.sep) ? absWorkDir : absWorkDir + path.sep;
+    return absTarget === absWorkDir || absTarget.startsWith(prefix);
 }
 
 /**
@@ -64,10 +65,10 @@ export function isPathInsideWorkspace(workDir: string, targetPath: string): bool
  * escape the workspace root (e.g. "../../etc/passwd"). Returns null when unsafe.
  */
 export function sanitizeRelativePath(workDir: string, rawPath: string): string | null {
-    if (!rawPath) return null;
+    if (typeof rawPath !== 'string' || !rawPath.trim()) return null;
     const cleaned = rawPath.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
     const normalized = path.normalize(cleaned).replace(/\\/g, '/');
-    if (!cleaned || normalized === '.' || normalized.startsWith('..') || path.isAbsolute(normalized) || /^[a-zA-Z]:(\/|$)/.test(cleaned)) {
+    if (!cleaned || normalized === '.' || normalized.startsWith('..') || path.isAbsolute(normalized) || /^[a-zA-Z]:/.test(cleaned)) {
         return null;
     }
     if (!isPathInsideWorkspace(workDir, normalized)) {
@@ -81,6 +82,7 @@ const ALLOWED_COMMAND_PREFIXES = [
 ];
 
 export function isCommandAllowed(command: string): boolean {
+    if (typeof command !== 'string') return false;
     const trimmed = command.trim();
     if (!trimmed) return false;
     // Reject any shell metacharacter that could chain commands, redirect output,
@@ -363,6 +365,7 @@ async function generateStructuredWithTools<T extends z.ZodTypeAny>(
 
 
 export function extractFilePathsFromDiff(diff: string): string[] {
+    if (typeof diff !== 'string') return [];
     const filePaths = new Set<string>();
     const matches = diff.matchAll(/^diff --git a\/(.+?) b\/(.+?)$/gm);
     for (const match of matches) {
@@ -409,6 +412,7 @@ export function findFileInWorkspaceByBasename(workDir: string, basename: string)
 }
 
 export function extractFilePathsFromLogs(logs: string, workDir: string = process.cwd()): string[] {
+    if (typeof logs !== 'string') return [];
     const filePaths = new Set<string>();
     const regex = /(?:^|[\s"'(:]+)([a-zA-Z0-9_\-\.\/\\]+\.(?:rs|kt|java|ts|tsx|js|jsx|go|py|c|cpp|h|hpp|toml|json|yaml|yml|gradle|properties))(?::\s*\d+|(?::\s*\d+)?:\s*\d+|:\s*\(\s*\d+(?:\s*,\s*\d+)?\)|\(\s*\d+(?:\s*,\s*\d+)?\)|[:\s"'`\)]|$)/gm;
     const absWorkDir = path.resolve(workDir).replace(/\\/g, '/');
