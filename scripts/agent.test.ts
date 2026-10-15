@@ -153,4 +153,50 @@ describe('agent', () => {
         }
         assert.ok(!fs.existsSync(verify.command));
     });
+
+    it('stamps the exact state a verify run passed on, and clears the stamp when a run fails', () => {
+        dir = repo();
+        const verify = agent.writeVerifyScript(dir, '', process.env.TEST_CMD!);
+        try {
+            fs.writeFileSync(path.join(dir, 'math.js'), GOOD);
+            assert.equal(verify.passedFingerprint(), null);
+            execFileSync(verify.command, { stdio: 'pipe' });
+            const passed = verify.passedFingerprint();
+            assert.ok(passed);
+            assert.equal(passed, verify.currentFingerprint());
+
+            // Any edit after the passing run, untracked files included, moves the state off the stamp.
+            fs.writeFileSync(path.join(dir, 'extra.js'), '// new\n');
+            assert.notEqual(verify.currentFingerprint(), passed);
+
+            fs.writeFileSync(path.join(dir, 'math.js'), BROKEN);
+            assert.throws(() => execFileSync(verify.command, { stdio: 'pipe' }));
+            assert.equal(verify.passedFingerprint(), null);
+        } finally {
+            verify.dispose();
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('skips its own test run only with trust_claude_checks on and a stamp matching the files', () => {
+        dir = repo();
+        // The agent's verify run checks nothing, so a skipped janitor run is the only way BROKEN can pass.
+        const verify = agent.writeVerifyScript(dir, '', 'true');
+        try {
+            const baseline = new Set<string>();
+            fs.writeFileSync(path.join(dir, 'math.js'), BROKEN);
+            execFileSync(verify.command, { stdio: 'pipe' });
+
+            assert.equal(agent.checkAgentChanges(dir, baseline, verify, true).success, true);
+            assert.equal(agent.checkAgentChanges(dir, baseline, verify, false).failedStep, 'test');
+            assert.ok(!config.trustClaudeChecks, 'trust_claude_checks is off by default');
+
+            // Edited after the passing run: the janitor checks it itself.
+            fs.appendFileSync(path.join(dir, 'math.js'), '// later\n');
+            assert.equal(agent.checkAgentChanges(dir, baseline, verify, true).failedStep, 'test');
+        } finally {
+            verify.dispose();
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
 });

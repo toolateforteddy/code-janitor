@@ -13,6 +13,7 @@ import {
     maxTestLineDiff,
     enableTestGen,
     claudeCodeAgentMaxTurns,
+    trustClaudeChecks,
 } from './config.js';
 import { CLAUDE_CODE_PROVIDER, generateWithClaudeCode } from './claudecode.js';
 import { modelFallback } from './ai.js';
@@ -30,8 +31,9 @@ import { isQuotaExhaustedError } from './retry.js';
  * the worktree and run exactly one command, a verify script that runs the configured
  * lint and test commands. Whatever it reports, the janitor then reads the result off
  * disk, enforces integrity and the line budgets, and runs lint and tests again itself
- * before anything is committed. A failure there earns the agent one more pass with
- * the failure output, the same single retry the edit flow's auto-fix gets.
+ * (unless trust_claude_checks is on and the verify script stamped this exact worktree
+ * state as passing). A failure there earns the agent one more pass with the failure
+ * output, the same single retry the edit flow's auto-fix gets.
  */
 
 const AGENT_PASSES = 2;
@@ -98,20 +100,82 @@ export function collectAgentChanges(workDir: string, baseline: Set<string>): { c
 }
 
 /**
+ * Records the exact state of `workDir` as a git tree id, built in a scratch index at
+ * `indexPath` so the worktree's own index is never touched. Covers every tracked and
+ * untracked file that is not gitignored, so any edit after the stamp changes the id.
+ */
+export function treeFingerprintCommands(indexPath: string): string[] {
+    const index = JSON.stringify(indexPath);
+    return [
+        `GIT_INDEX_FILE=${index} git read-tree HEAD`,
+        `GIT_INDEX_FILE=${index} git add -A`,
+        `GIT_INDEX_FILE=${index} git write-tree`,
+    ];
+}
+
+export function treeFingerprint(workDir: string, indexPath: string): string | null {
+    try {
+        const out = execFileSync('bash', ['-c', `set -e; ${treeFingerprintCommands(indexPath).join('; ')}`], {
+            cwd: workDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        return out.trim().split('\n').pop() || null;
+    } catch {
+        return null;
+    }
+}
+
+export interface VerifyScript {
+    /** The one command the agent may run. */
+    command: string;
+    /**
+     * The worktree state the agent's latest verify run passed on, or null when its latest
+     * run failed or it never ran one. Written by the script itself, outside the worktree,
+     * where the agent's edits cannot reach.
+     */
+    passedFingerprint: () => string | null;
+    /** The worktree's state now, in the same terms. */
+    currentFingerprint: () => string | null;
+    dispose: () => void;
+}
+
+/**
  * Writes the one command the agent may run: lint, then tests, in the worktree. It lives
  * outside the worktree so it can never be committed, and runs the same commands as the
- * janitor's own verification.
+ * janitor's own verification. On success it stamps the worktree state it passed on, so
+ * the janitor can skip re-running the checks on a state that has already passed them.
  */
-export function writeVerifyScript(workDir: string, lint: string, test: string): { command: string; dispose: () => void } {
+export function writeVerifyScript(workDir: string, lint: string, test: string): VerifyScript {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-verify-'));
     const script = path.join(dir, 'verify.sh');
-    const lines = ['#!/usr/bin/env bash', 'set -e', `cd ${JSON.stringify(workDir)}`];
+    const stamp = path.join(dir, 'passed');
+    const lines = [
+        '#!/usr/bin/env bash',
+        'set -e',
+        // A run that fails must not leave an earlier pass standing.
+        `rm -f ${JSON.stringify(stamp)}`,
+        `cd ${JSON.stringify(workDir)}`,
+    ];
     if (lint) lines.push('echo "== lint"', lint);
     if (test) lines.push('echo "== test"', test);
     if (!lint && !test) lines.push('echo "No lint or test command is configured; nothing to check."');
-    lines.push('echo "== all checks passed"');
+    lines.push(
+        // Stamped after the checks, so whatever they rewrote (a formatter, say) is included.
+        `( ${treeFingerprintCommands(path.join(dir, 'stamp-index')).join(' && ')} ) > ${JSON.stringify(stamp)}`,
+        'echo "== all checks passed"',
+    );
     fs.writeFileSync(script, lines.join('\n') + '\n', { mode: 0o755 });
-    return { command: script, dispose: () => fs.rmSync(dir, { recursive: true, force: true }) };
+    return {
+        command: script,
+        passedFingerprint: () => {
+            try {
+                return fs.readFileSync(stamp, 'utf-8').trim().split('\n').pop() || null;
+            } catch {
+                return null;
+            }
+        },
+        currentFingerprint: () => treeFingerprint(workDir, path.join(dir, 'check-index')),
+        dispose: () => fs.rmSync(dir, { recursive: true, force: true }),
+    };
 }
 
 export function buildAgentSystemPrompt(verifyCommand: string): string {
@@ -143,7 +207,7 @@ export function buildAgentPrompt(fix: FixProposal, previousFailure?: { step: str
  * Checks what the agent left on disk exactly as the edit flow checks a proposal:
  * integrity and line budgets first, then lint and tests run by the janitor itself.
  */
-export function checkAgentChanges(workDir: string, baseline: Set<string>): AgentFixOutcome {
+export function checkAgentChanges(workDir: string, baseline: Set<string>, verify?: VerifyScript, trustPassedRun: boolean = trustClaudeChecks): AgentFixOutcome {
     const { changes, originalContents } = collectAgentChanges(workDir, baseline);
     if (changes.length === 0) {
         return { success: false, changes, originalContents, summary: '', failedStep: 'no-changes', failureOutput: 'The agent left the working directory unchanged.' };
@@ -151,6 +215,14 @@ export function checkAgentChanges(workDir: string, baseline: Set<string>): Agent
     const integrity = validateFixIntegrity(originalContents, changes);
     if (!integrity.valid) {
         return { success: false, changes, originalContents, summary: '', failedStep: 'integrity', failureOutput: integrity.reason };
+    }
+    // With trust_claude_checks on, a state the agent's last verify run stamped as passing
+    // is not run again: the same commands already passed on exactly these files. Any other
+    // state, including one edited after its last passing run, is checked here from scratch.
+    const passed = trustPassedRun ? verify?.passedFingerprint() : null;
+    if (passed && passed === verify?.currentFingerprint()) {
+        console.log(`✅ Lint and tests already passed on this exact change in the agent's last verify run (tree ${passed.slice(0, 12)}); not running them again.`);
+        return { success: true, changes, originalContents, summary: '', failedStep: '', failureOutput: '' };
     }
     const verification = runVerification(lintCmd, testCmd, testTimeoutMs, workDir);
     return { success: verification.success, changes, originalContents, summary: '', failedStep: verification.failedStep, failureOutput: verification.failureOutput };
@@ -207,7 +279,7 @@ export async function implementFixWithAgent(fix: FixProposal, workDir: string, o
                 console.warn(`⚠️ Claude Code did not finish its report: ${err instanceof Error ? err.message : String(err)}`);
             }
 
-            outcome = { ...checkAgentChanges(workDir, baseline), summary };
+            outcome = { ...checkAgentChanges(workDir, baseline, verify), summary };
             if (outcome.success || outcome.failedStep === 'no-changes') break;
             console.warn(`⚠️ Janitor check failed for '${fix.slug}' at ${outcome.failedStep}.`);
         }

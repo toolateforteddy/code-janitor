@@ -252,6 +252,13 @@ export function proposalFilePaths(fix: FixProposal): string[] {
  */
 export const claudeCodeAgent = process.env.CLAUDE_CODE_AGENT !== 'false';
 
+/**
+ * Skip the janitor's own lint and test run on a change Claude Code's verify script
+ * already passed, unchanged since. Off by default: it saves Actions runner minutes, at
+ * the price of one fewer independent run before CI.
+ */
+export const trustClaudeChecks = process.env.TRUST_CLAUDE_CHECKS === 'true';
+
 /** Turns the implementing agent may take per pass: reads, edits and verify runs together. */
 export const claudeCodeAgentMaxTurns = parseLineBudget(process.env.CLAUDE_CODE_AGENT_MAX_TURNS, 40);
 
