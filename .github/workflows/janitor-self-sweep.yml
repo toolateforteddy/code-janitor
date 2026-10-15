@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       provider:
-        description: 'AI provider (google, anthropic, openai)'
+        description: 'AI provider (google, anthropic, openai, claude-code)'
         type: string
         required: false
         default: 'google'
@@ -69,3 +69,5 @@ jobs:
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          # Used only when provider is claude-code: bills Teddy's own Claude subscription.
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

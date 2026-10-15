@@ -36,6 +36,7 @@ import { runVerification, logFailedDiff, runCmd } from './git.js';
 import { withLlmRetry } from './retry.js';
 import { ModelFallback, resolveFallbackChoice } from './fallback.js';
 import { recordNote, getSummary } from './summary.js';
+import { CLAUDE_CODE_PROVIDER, generateWithClaudeCode } from './claudecode.js';
 import { isTestFilePath } from './paths.js';
 
 const EDIT_FORMAT_RULE = `CHANGE FORMAT (PREFER TARGETED EDITS): For an EXISTING file, express the change as an 'edits' array of search/replace pairs: 'oldText' is a snippet copied VERBATIM from the current file content (exact indentation, enough surrounding lines to be unique in that file) and 'newText' is what replaces it. Use an empty 'newText' to delete the snippet, and set 'replaceAll' only when every occurrence should change. Do NOT echo the whole file back. For a NEW file, omit 'edits' and put the complete file body in 'updatedContent'. If you do fall back to 'updatedContent' for an existing file, it MUST be the COMPLETE file from line 1 to the end -- never abbreviate or summarize unedited code with '// ...' and never drop existing top-level functions, structs, classes, imports, macros, or types.`;
@@ -297,7 +298,8 @@ async function generateStructuredWithTools<T extends z.ZodTypeAny>(
     schema: T,
     system: string,
     prompt: string,
-    tools: ReturnType<typeof createJanitorTools>
+    tools: ReturnType<typeof createJanitorTools>,
+    workDir: string = process.cwd()
 ): Promise<z.infer<T>> {
     // Every request goes through the fallback so that the first "out of tokens" answer
     // from the primary retires it and the rest of the run continues on the backup.
@@ -311,6 +313,17 @@ async function generateStructuredWithTools<T extends z.ZodTypeAny>(
             maxDelayMs: llmRetryMaxDelayMs,
             label: `${describeModel(choice.provider, choice.model)} request`,
         };
+
+        if (choice.provider === CLAUDE_CODE_PROVIDER) {
+            // Claude Code inspects the workspace with its own read-only tools, so the
+            // janitor's tool set only decides whether inspection is allowed at all.
+            return withLlmRetry(() => generateWithClaudeCode(schema, system, prompt, {
+                model: choice.model,
+                workDir,
+                allowTools: Boolean(tools),
+                maxTurns: maxLlmToolSteps,
+            }), retryOptions);
+        }
 
         if (tools) {
             return withLlmRetry(async () => {
@@ -749,7 +762,7 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
     }
 
     console.log("🔧 Querying model for repair proposals...");
-    const result = await generateStructuredWithTools(fixesResponseSchema, repairPrompt, promptText, tools);
+    const result = await generateStructuredWithTools(fixesResponseSchema, repairPrompt, promptText, tools, workDir);
 
     if (result.fixes.length > maxPRs) {
         console.log(`⚠️ Model returned ${result.fixes.length} repair proposals; capping to maxPRs (${maxPRs}).`);
@@ -843,7 +856,7 @@ export async function generateFixProposals(diff: string, workDir: string = proce
     }
 
     console.log("🤖 Querying model for refactor proposals...");
-    const result = await generateStructuredWithTools(fixesResponseSchema, systemPrompt, promptText, tools);
+    const result = await generateStructuredWithTools(fixesResponseSchema, systemPrompt, promptText, tools, workDir);
 
     if (result.fixes.length > maxPRs) {
         console.log(`⚠️ Model returned ${result.fixes.length} refactor proposals; capping to maxPRs (${maxPRs}).`);
@@ -915,7 +928,7 @@ export async function attemptAutoFix(
 
         const retryPromptText = `Proposed Fix Title: ${fix.title}\n\nFailure Output (${failedStep}):\n${failureOutput}${agentHeader}${testHeader}\n\nModified Files:\n${fileContentsText}`;
 
-        const retryResult = await generateStructuredWithTools(retrySchema, retrySystemPrompt, retryPromptText, tools);
+        const retryResult = await generateStructuredWithTools(retrySchema, retrySystemPrompt, retryPromptText, tools, workDir);
 
         console.log(`🤖 Auto-fix proposal: ${retryResult.explanation}`);
         const updatedChanges = retryResult.changes;

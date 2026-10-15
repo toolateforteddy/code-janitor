@@ -7,7 +7,7 @@ branding:
 
 inputs:
   provider:
-    description: 'AI Provider (google, anthropic, openai)'
+    description: 'AI Provider (google, anthropic, openai, claude-code). claude-code runs each request through the Claude Code CLI and can bill a Claude Pro/Max subscription via claude_code_oauth_token.'
     required: false
     default: 'google'
   model:
@@ -15,7 +15,7 @@ inputs:
     required: false
     default: 'gemini-3.8-flash'
   fallback_provider:
-    description: 'Backup AI provider (google, anthropic, openai) used for the rest of the run once the primary reports an exhausted token/credit allowance. Empty disables the fallback.'
+    description: 'Backup AI provider (google, anthropic, openai, claude-code) used for the rest of the run once the primary reports an exhausted token/credit allowance. Empty disables the fallback.'
     required: false
     default: ''
   fallback_model:
@@ -154,6 +154,10 @@ inputs:
     description: 'OpenAI API Key'
     required: false
     default: ''
+  claude_code_oauth_token:
+    description: 'Claude subscription token from `claude setup-token`, used by the claude-code provider. Bills your own Pro/Max plan instead of an API key; use it only for repositories you run the janitor on yourself.'
+    required: false
+    default: ''
   github_token:
     description: 'GitHub token for PR creation and CLI queries'
     required: false
@@ -271,6 +275,11 @@ runs:
       with:
         node-version: ${{ inputs.node_version != '' && inputs.node_version || '24' }}
 
+    - name: Install Claude Code CLI
+      if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (inputs.provider == 'claude-code' || inputs.fallback_provider == 'claude-code')
+      shell: bash
+      run: command -v claude >/dev/null || npm install -g @anthropic-ai/claude-code
+
     - name: Execute Code Janitor Agent
       if: steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch'
       shell: bash
@@ -308,6 +317,7 @@ runs:
         GEMINI_API_KEY: ${{ inputs.gemini_api_key || env.GEMINI_API_KEY }}
         ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key || env.ANTHROPIC_API_KEY }}
         OPENAI_API_KEY: ${{ inputs.openai_api_key || env.OPENAI_API_KEY }}
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude_code_oauth_token || env.CLAUDE_CODE_OAUTH_TOKEN }}
       run: |
         cd "${{ github.action_path }}/scripts"
         npm ci

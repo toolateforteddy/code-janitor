@@ -83,6 +83,8 @@ const QUOTA_MESSAGE_PATTERNS = [
     /payment required/i,
     /upgrade your plan/i,
     /plan limit reached/i,
+    // Claude Code on a subscription: the plan's usage window is spent until it resets.
+    /you'?ve hit your (usage |session |weekly )?limit/i,
 ];
 
 /**
