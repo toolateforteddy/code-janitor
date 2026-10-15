@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { ClaudeCodeUsage, addClaudeCodeUsage, emptyClaudeCodeUsage } from './claudecode.js';
 
 /** What ultimately happened to a single proposed fix. */
 export type FixOutcome = 'pr-created' | 'verification-failed' | 'no-changes' | 'error';
@@ -28,6 +29,8 @@ export interface RunSummary {
     duplicatesSkipped: number;
     results: FixResult[];
     notes: string[];
+    /** Totals across every claude-code request, or null when none was made. */
+    claudeCodeUsage: ClaudeCodeUsage | null;
 }
 
 export function createRunSummary(provider: string, model: string, mode: string, startedAt: number = Date.now()): RunSummary {
@@ -43,6 +46,7 @@ export function createRunSummary(provider: string, model: string, mode: string, 
         duplicatesSkipped: 0,
         results: [],
         notes: [],
+        claudeCodeUsage: null,
     };
 }
 
@@ -61,6 +65,16 @@ export function getSummary(): RunSummary {
 
 export function recordFixResult(result: FixResult): void {
     current.results.push(result);
+}
+
+export function recordClaudeCodeUsage(usage: ClaudeCodeUsage): void {
+    current.claudeCodeUsage = addClaudeCodeUsage(current.claudeCodeUsage ?? emptyClaudeCodeUsage(), usage);
+}
+
+export function formatTokens(count: number): string {
+    if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
+    if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k`;
+    return String(count);
 }
 
 export function recordNote(note: string): void {
@@ -120,6 +134,14 @@ export function renderSummary(s: RunSummary, now: number = Date.now()): string {
     }
     lines.push(`| PRs opened | ${created.length} |`);
     lines.push(`| Duration | ${formatDuration(now - s.startedAt)} |`);
+    if (s.claudeCodeUsage) {
+        const u = s.claudeCodeUsage;
+        lines.push(
+            `| Claude Code usage | ${u.requests} request(s), ${u.turns} turn(s), ` +
+            `${formatTokens(u.inputTokens)} in (${formatTokens(u.cacheReadTokens)} cached) / ${formatTokens(u.outputTokens)} out, ` +
+            `~$${u.costUsd.toFixed(2)} at API prices |`
+        );
+    }
     lines.push('');
 
     if (s.results.length > 0) {

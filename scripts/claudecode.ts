@@ -71,6 +71,68 @@ interface ClaudeCodeResult {
     is_error?: boolean;
     result?: string;
     structured_output?: unknown;
+    num_turns?: number;
+    total_cost_usd?: number;
+    usage?: {
+        input_tokens?: number;
+        output_tokens?: number;
+        cache_creation_input_tokens?: number;
+        cache_read_input_tokens?: number;
+    };
+}
+
+/** What one `claude -p` request consumed, as the CLI reports it. */
+export interface ClaudeCodeUsage {
+    requests: number;
+    turns: number;
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    /** What the request would have cost at API list prices. A subscription is not billed this. */
+    costUsd: number;
+}
+
+export function emptyClaudeCodeUsage(): ClaudeCodeUsage {
+    return { requests: 0, turns: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, costUsd: 0 };
+}
+
+export function addClaudeCodeUsage(total: ClaudeCodeUsage, more: ClaudeCodeUsage): ClaudeCodeUsage {
+    return {
+        requests: total.requests + more.requests,
+        turns: total.turns + more.turns,
+        inputTokens: total.inputTokens + more.inputTokens,
+        outputTokens: total.outputTokens + more.outputTokens,
+        cacheReadTokens: total.cacheReadTokens + more.cacheReadTokens,
+        costUsd: total.costUsd + more.costUsd,
+    };
+}
+
+function num(value: unknown): number {
+    return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * Reads the usage off a CLI result line, or null when there is no result object to read.
+ * Input tokens count everything sent, cached or not, since all of it draws on the plan.
+ */
+export function readClaudeCodeUsage(stdout: string): ClaudeCodeUsage | null {
+    let parsed: ClaudeCodeResult;
+    try {
+        parsed = JSON.parse(stdout.trim().split('\n').pop() ?? '');
+    } catch {
+        return null;
+    }
+    if (!parsed || typeof parsed !== 'object') return null;
+    const usage = parsed.usage ?? {};
+    const cacheRead = num(usage.cache_read_input_tokens);
+    return {
+        requests: 1,
+        turns: num(parsed.num_turns),
+        inputTokens: num(usage.input_tokens) + num(usage.cache_creation_input_tokens) + cacheRead,
+        outputTokens: num(usage.output_tokens),
+        cacheReadTokens: cacheRead,
+        costUsd: num(parsed.total_cost_usd),
+    };
 }
 
 /**
@@ -117,6 +179,8 @@ export interface ClaudeCodeOptions {
     timeoutMs?: number;
     /** Executable to run. Overridable for tests. */
     command?: string;
+    /** Called with what each request consumed, whether or not its answer was usable. */
+    onUsage?: (usage: ClaudeCodeUsage) => void;
 }
 
 /** Runs one structured request through `claude -p` in `workDir`. The prompt goes on stdin, so its size is not bounded by argv limits. */
@@ -165,6 +229,8 @@ export function generateWithClaudeCode<T extends z.ZodTypeAny>(
                 reject(new Error(`Claude Code request timed out (killed by ${signal})`));
                 return;
             }
+            const usage = readClaudeCodeUsage(stdout);
+            if (usage) options.onUsage?.(usage);
             try {
                 resolve(parseClaudeCodeOutput(schema, stdout));
             } catch (err) {

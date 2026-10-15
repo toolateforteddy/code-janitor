@@ -22,6 +22,10 @@ inputs:
     description: 'Model ID for the backup provider. Empty uses that provider default.'
     required: false
     default: ''
+  triage_model:
+    description: 'Model for the triage request that picks which changed files to review in a large window. Empty means haiku on the claude-code provider and the main model otherwise.'
+    required: false
+    default: ''
   test_command:
     description: 'Command to run tests (e.g., go test ./..., cargo test, npm test)'
     required: false
@@ -75,9 +79,9 @@ inputs:
     required: false
     default: 'true'
   max_concurrency:
-    description: 'Maximum number of fixes to process in parallel (via git worktrees) per run'
+    description: 'Maximum number of fixes to process in parallel (via git worktrees) per run. Empty means 3, or 1 on the claude-code provider.'
     required: false
-    default: '3'
+    default: ''
   reviewers:
     description: 'Comma-separated GitHub handles or teams to request review'
     required: false
@@ -289,6 +293,7 @@ runs:
         AI_MODEL: ${{ inputs.model }}
         FALLBACK_AI_PROVIDER: ${{ inputs.fallback_provider }}
         FALLBACK_AI_MODEL: ${{ inputs.fallback_model }}
+        TRIAGE_MODEL: ${{ inputs.triage_model }}
         TEST_CMD: ${{ inputs.test_command }}
         TEST_TIMEOUT: ${{ inputs.test_timeout }}
         LINT_CMD: ${{ inputs.lint_command }}
