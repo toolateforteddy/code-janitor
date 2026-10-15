@@ -145,10 +145,11 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 
 | Input | Description | Default |
 | :--- | :--- | :--- |
-| `provider` | AI Provider (`google`, `anthropic`, `openai`) | `'google'` |
+| `provider` | AI Provider (`google`, `anthropic`, `openai`, `claude-code`). See [Running on a Claude subscription](#-running-on-a-claude-subscription) | `'google'` |
 | `model` | AI Model ID to execute | `'gemini-3.8-flash'` |
 | `fallback_provider` | Backup AI provider used for the rest of the run once the primary reports an exhausted token/credit allowance. Empty disables the fallback | `''` |
 | `fallback_model` | Model ID for the backup provider. Empty uses that provider's default | `''` |
+| `claude_code_oauth_token` | Claude subscription token from `claude setup-token`, used by the `claude-code` provider | `''` |
 | `test_command` | Command to run tests | `'go test ./...'` |
 | `test_timeout` | Timeout for test execution in minutes | `5` |
 | `lint_command` | Command to run linters before tests | `''` |
@@ -338,6 +339,29 @@ Both providers' keys must be present — the fallback is only reachable if its k
 4. The run log records `🔁 anthropic/claude-sonnet-4-5 is out of tokens/quota; falling back to google/gemini-3.8-flash for the rest of this run`, and the job summary reports the model that actually did the work plus a note explaining the switch.
 
 If the backup is exhausted too — or no fallback is configured — the error propagates and the run fails, as before. A `fallback_provider`/`fallback_model` identical to the primary is ignored.
+
+---
+
+## 🪪 Running on a Claude Subscription
+
+The `claude-code` provider bills a Claude Pro or Max plan instead of an API key. It runs each request through the Claude Code CLI (`claude -p`) rather than calling a model API itself, because a subscription token is only accepted by Claude Code: Anthropic does not allow it to be used from other API clients, the `anthropic` provider here included.
+
+1. On your own machine, run `claude setup-token` and approve it in the browser. It prints a token valid for a year.
+2. Save it as a repository secret named `CLAUDE_CODE_OAUTH_TOKEN`.
+3. Point the janitor at it:
+
+```yaml
+        with:
+          provider: 'claude-code'
+          model: 'sonnet'              # any Claude Code model alias or full ID; empty uses Claude Code's default
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          fallback_provider: 'google'  # optional: keeps the run alive when the plan's usage window is spent
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+```
+
+The action installs the CLI when either `provider` or `fallback_provider` is `claude-code`. Workspace inspection uses Claude Code's own read-only tools (`Read`, `Grep`, `Glob`), bounded by `max_llm_tool_steps`; nothing the model does through the CLI can write files or run commands, so every change still goes through the janitor's edit, lint and test pipeline. A spent plan (`You've hit your limit`) counts as out of tokens, so a configured fallback takes over for the rest of the run.
+
+**Keep it to your own repositories.** Anthropic's terms allow a subscription token to drive Claude Code for your own ordinary use, which a scheduled sweep of your own repos is. They do not allow sharing one person's subscription across other people's repositories or offering it as a service; use an API key (`provider: 'anthropic'`) for that. Runs draw on the same usage limits as your interactive Claude use.
 
 ---
 
