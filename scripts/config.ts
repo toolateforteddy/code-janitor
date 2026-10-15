@@ -209,7 +209,51 @@ export const fixesResponseSchema = z.object({
     fixes: z.array(fixProposalSchema),
 });
 
-export type FixProposal = z.infer<typeof fixProposalSchema>;
+/**
+ * A proposal as the run carries it. `plannedFiles` is set only on a plan from the
+ * claude-code agent flow (see agent.ts), which names the files a fix will touch and
+ * leaves writing the code to the agent; such a proposal has no `changes`.
+ */
+export type FixProposal = z.infer<typeof fixProposalSchema> & { plannedFiles?: string[] };
+
+/** What the claude-code agent flow asks for: the fix described, not written. */
+export const fixPlanSchema = z.object({
+    slug: z.string().describe('Short url-safe string for git branch, e.g., fix-nil-pointer'),
+    title: z.string().describe('Concise PR title'),
+    description: z.string().describe('What to change and why, precise enough for another engineer to implement: which functions, which edge cases, which tests to add and where'),
+    files: z.array(z.string()).min(1).max(5).describe('Relative paths of the files this fix will create or modify, test files included'),
+});
+
+export const plansResponseSchema = z.object({
+    fixes: z.array(fixPlanSchema),
+});
+
+export type FixPlan = z.infer<typeof fixPlanSchema>;
+
+export function planToProposal(plan: FixPlan): FixProposal {
+    return { slug: plan.slug, title: plan.title, description: plan.description, plannedFiles: plan.files };
+}
+
+/** True for a plan the agent still has to implement, as opposed to a proposal that carries its code. */
+export function isPlannedFix(fix: FixProposal): boolean {
+    return getProposalChanges(fix).length === 0 && Array.isArray(fix.plannedFiles) && fix.plannedFiles.length > 0;
+}
+
+/** The files a proposal touches, whether it carries its code or only a plan. */
+export function proposalFilePaths(fix: FixProposal): string[] {
+    const changed = getProposalChanges(fix).map(c => c.filePath);
+    return changed.length > 0 ? changed : (fix.plannedFiles ?? []);
+}
+
+/**
+ * On the claude-code provider, whether fixes are implemented by Claude Code editing the
+ * worktree and running the checks itself (the default), rather than returned as edits
+ * for the janitor to apply. CLAUDE_CODE_AGENT=false goes back to returned edits.
+ */
+export const claudeCodeAgent = process.env.CLAUDE_CODE_AGENT !== 'false';
+
+/** Turns the implementing agent may take per pass: reads, edits and verify runs together. */
+export const claudeCodeAgentMaxTurns = parseLineBudget(process.env.CLAUDE_CODE_AGENT_MAX_TURNS, 40);
 
 export const triageResponseSchema = z.object({
     files: z.array(z.string()).describe('Paths, exactly as listed, of the changed files most worth reviewing, best first'),

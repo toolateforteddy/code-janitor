@@ -150,6 +150,8 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 | `fallback_provider` | Backup AI provider used for the rest of the run once the primary reports an exhausted token/credit allowance. Empty disables the fallback | `''` |
 | `fallback_model` | Model ID for the backup provider. Empty uses that provider's default | `''` |
 | `triage_model` | Model for the triage request that picks which files of a large window to review. Empty means `haiku` on the `claude-code` provider and the main model otherwise | `''` |
+| `claude_code_agent` | On the `claude-code` provider, Claude Code implements each fix in its worktree and runs the checks itself. `false` goes back to returned edits | `true` |
+| `claude_code_agent_max_turns` | Turns the implementing agent may take per pass; each fix gets at most two passes | `40` |
 | `claude_code_oauth_token` | Claude subscription token from `claude setup-token`, used by the `claude-code` provider | `''` |
 | `test_command` | Command to run tests | `'go test ./...'` |
 | `test_timeout` | Timeout for test execution in minutes | `5` |
@@ -360,13 +362,21 @@ The `claude-code` provider bills a Claude Pro or Max plan instead of an API key.
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
 ```
 
-The action installs the CLI when either `provider` or `fallback_provider` is `claude-code`. Workspace inspection uses Claude Code's own read-only tools (`Read`, `Grep`, `Glob`), bounded by `max_llm_tool_steps`; nothing the model does through the CLI can write files or run commands, so every change still goes through the janitor's edit, lint and test pipeline. A spent plan (`You've hit your limit`) counts as out of tokens, so a configured fallback takes over for the rest of the run.
+The action installs the CLI when either `provider` or `fallback_provider` is `claude-code`. Triage and proposal requests inspect the workspace with Claude Code's own read-only tools (`Read`, `Grep`, `Glob`), bounded by `max_llm_tool_steps`. Only the implementing step below can edit files, and only inside a fix's worktree. A spent plan (`You've hit your limit`) counts as out of tokens, so a configured fallback takes over for the rest of the run.
+
+**Claude Code writes the fixes itself.** With the other providers the model returns each fix as search/replace edits inside its JSON answer; the janitor applies them, runs the checks, and on a failure asks for corrected edits once. On `claude-code` the work is split differently:
+
+1. **Plan.** The proposal request asks only for each fix's title, description and the files it will touch. No code is written at this step, so none is paid for twice.
+2. **Implement.** For each fix, Claude Code runs in that fix's worktree with `Read`, `Grep`, `Glob`, `Edit` and `Write`, plus `Bash` for exactly one command: a verify script, kept outside the worktree, that runs `lint_command` and `test_command`. Edits outside the worktree and every other shell command are denied (nobody is there to approve them in a CI run). It edits, runs the checks, reads the failures and iterates, up to `claude_code_agent_max_turns` turns.
+3. **Check.** The janitor ignores what the agent says about its own checks. It reads the changed files off disk, applies the same integrity and line-budget checks as always, and runs lint and tests itself. A failure there goes back to the agent for one more pass with the output, the same single retry the edit flow gets. Only then is the change committed and the PR opened, with the agent's own summary added to the description.
+
+If the plan's allowance runs out mid-run and a `fallback_provider` takes over, fixes already planned for Claude Code are reported as not implemented rather than handed to a provider that cannot edit files. Set `claude_code_agent: 'false'` to keep the edit flow on `claude-code` too.
 
 **What it does differently to save your allowance.** On a subscription every token comes out of the same allowance as your own Claude use, so the provider spends less of it:
 
 - **Nothing is sent twice.** Claude Code already loads the workspace's root `CLAUDE.md`, so it is left out of the prompt. With workspace tools on, the changed files and example tests are listed by path for Claude to open with `Read` as needed, rather than pasted whole into every request.
 - **Triage runs on Haiku.** Picking which files of a large window to review needs only the commit log and a file stat, so it goes to `haiku` unless `triage_model` says otherwise. Fix proposals and auto-fixes stay on `model`.
-- **One fix at a time.** `max_concurrency` defaults to 1 here, so parallel auto-fix retries do not race through the plan. Set it explicitly to run fixes in parallel anyway.
+- **One fix at a time.** `max_concurrency` defaults to 1 here, so parallel agents do not race through the plan or run test suites over each other. Set it explicitly to run fixes in parallel anyway.
 - **Usage in the job summary.** Each run's summary has a *Claude Code usage* row: requests, turns, input (and how much was cached) and output tokens, plus what that would have cost at API prices, as a gauge of how much of the plan a sweep takes.
 
 **Keep it to your own repositories.** Anthropic's terms allow a subscription token to drive Claude Code for your own ordinary use, which a scheduled sweep of your own repos is. They do not allow sharing one person's subscription across other people's repositories or offering it as a service; use an API key (`provider: 'anthropic'`) for that. Runs draw on the same usage limits as your interactive Claude use.
