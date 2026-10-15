@@ -167,7 +167,7 @@ inputs:
     required: false
     default: '40'
   trust_claude_checks:
-    description: 'On the claude-code agent flow, skip the janitor''s own lint and test run when Claude Code''s last check run passed on exactly the files being committed. Saves Actions runner minutes; the PR''s CI still runs the same checks before merge.'
+    description: 'On the claude-code agent flow, skip the janitor''s own lint and test run when Claude Code''s last check run passed on exactly the files being committed. Saves Actions runner minutes, which matters on private repositories (public ones run free); the PR''s CI still runs the same checks before merge.'
     required: false
     default: 'false'
   claude_code_oauth_token:
