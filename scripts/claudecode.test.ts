@@ -10,7 +10,11 @@ import {
     buildClaudeCodeEnv,
     parseClaudeCodeOutput,
     generateWithClaudeCode,
+    readClaudeCodeUsage,
 } from './claudecode.js';
+import { buildProposalPrompts, selectPrompt, isLoadedByClaudeCode, formatFilesToRead } from './ai.js';
+import { resolveMaxConcurrency, resolveTriageModel } from './config.js';
+import { createRunSummary, setSummary, recordClaudeCodeUsage, renderSummary, getSummary } from './summary.js';
 import { isQuotaExhaustedError, isTransientLlmError } from './retry.js';
 
 const schema = z.object({ files: z.array(z.string()), reason: z.string() });
@@ -116,6 +120,119 @@ process.stdin.on('end', () => {
                 }),
                 /Claude Code CLI on PATH/
             );
+        });
+    });
+
+    describe('saving subscription allowance', () => {
+        function workspace(files: Record<string, string>): string {
+            const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-lean-'));
+            for (const [rel, content] of Object.entries(files)) {
+                fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+                fs.writeFileSync(path.join(dir, rel), content);
+            }
+            return dir;
+        }
+
+        it('knows which agent files Claude Code loads itself', () => {
+            assert.ok(isLoadedByClaudeCode('CLAUDE.md'));
+            assert.ok(isLoadedByClaudeCode('.claude/CLAUDE.md'));
+            assert.ok(!isLoadedByClaudeCode('AGENTS.md'));
+            // Nested ones load only when Claude happens to read in that folder, so they stay in the prompt.
+            assert.ok(!isLoadedByClaudeCode('apps/web/CLAUDE.md'));
+        });
+
+        it('lists files by path for claude-code but pastes them for everyone else', () => {
+            const dir = workspace({ 'CLAUDE.md': 'ROOT-RULES', 'AGENTS.md': 'AGENT-RULES' });
+            try {
+                const parts = {
+                    lead: 'DIFF',
+                    workDir: dir,
+                    agentContexts: '--- CLAUDE.md ---\nROOT-RULES\n--- AGENTS.md ---\nAGENT-RULES',
+                    sourceHeading: 'Full contents',
+                    sourcePaths: ['src/a.ts'],
+                    sourceContexts: 'SOURCE-BODY',
+                    testPaths: ['src/a.test.ts'],
+                    testContexts: 'TEST-BODY',
+                    existingPRContext: '\n\nPRS',
+                    canRead: true,
+                };
+                const { full, claudeCode } = buildProposalPrompts(parts);
+                for (const text of ['DIFF', 'ROOT-RULES', 'AGENT-RULES', 'SOURCE-BODY', 'TEST-BODY', 'PRS']) {
+                    assert.ok(full.includes(text), `full prompt is missing ${text}`);
+                }
+                assert.ok(claudeCode.includes('AGENT-RULES'));
+                assert.ok(claudeCode.includes('- src/a.ts') && claudeCode.includes('- src/a.test.ts'));
+                assert.ok(claudeCode.includes('PRS'));
+                for (const text of ['ROOT-RULES', 'SOURCE-BODY', 'TEST-BODY']) {
+                    assert.ok(!claudeCode.includes(text), `claude-code prompt should not paste ${text}`);
+                }
+
+                // Without tools Claude cannot open the files, so they are pasted after all.
+                const noTools = buildProposalPrompts({ ...parts, canRead: false }).claudeCode;
+                assert.ok(noTools.includes('SOURCE-BODY') && noTools.includes('TEST-BODY'));
+                assert.ok(!noTools.includes('ROOT-RULES'));
+            } finally {
+                fs.rmSync(dir, { recursive: true, force: true });
+            }
+        });
+
+        it('picks the prompt for whichever provider is serving', () => {
+            const variants = { full: 'FULL', claudeCode: 'LEAN' };
+            assert.equal(selectPrompt(variants, 'claude-code'), 'LEAN');
+            assert.equal(selectPrompt(variants, 'google'), 'FULL');
+            assert.equal(selectPrompt('ONLY', 'claude-code'), 'ONLY');
+            assert.equal(formatFilesToRead('Files', []), '');
+        });
+
+        it('defaults triage to haiku and fixes to one at a time on claude-code only', () => {
+            assert.equal(resolveTriageModel('claude-code', ''), 'haiku');
+            assert.equal(resolveTriageModel('claude-code', 'sonnet'), 'sonnet');
+            assert.equal(resolveTriageModel('google', ''), '');
+            assert.equal(resolveTriageModel('google', 'gemini-lite'), 'gemini-lite');
+
+            assert.equal(resolveMaxConcurrency('claude-code', ''), 1);
+            assert.equal(resolveMaxConcurrency('claude-code', '4'), 4);
+            assert.equal(resolveMaxConcurrency('google', undefined), 3);
+            assert.equal(resolveMaxConcurrency('google', '0'), 3);
+        });
+
+        it('reads usage off a result, cached input included', () => {
+            const usage = readClaudeCodeUsage(result({
+                num_turns: 3,
+                total_cost_usd: 0.05,
+                usage: { input_tokens: 10, cache_creation_input_tokens: 200, cache_read_input_tokens: 4000, output_tokens: 80 },
+            }));
+            assert.deepEqual(usage, { requests: 1, turns: 3, inputTokens: 4210, outputTokens: 80, cacheReadTokens: 4000, costUsd: 0.05 });
+            assert.equal(readClaudeCodeUsage('not json'), null);
+        });
+
+        it('totals usage into the job summary, and shows nothing when Claude Code was not used', () => {
+            setSummary(createRunSummary('claude-code', 'sonnet', 'auto'));
+            assert.ok(!renderSummary(getSummary()).includes('Claude Code usage'));
+            recordClaudeCodeUsage({ requests: 1, turns: 2, inputTokens: 1500, outputTokens: 100, cacheReadTokens: 1000, costUsd: 0.25 });
+            recordClaudeCodeUsage({ requests: 1, turns: 1, inputTokens: 500, outputTokens: 50, cacheReadTokens: 0, costUsd: 0.5 });
+            const row = renderSummary(getSummary()).split('\n').find(line => line.includes('Claude Code usage'));
+            assert.equal(row, '| Claude Code usage | 2 request(s), 3 turn(s), 2.0k in (1.0k cached) / 150 out, ~$0.75 at API prices |');
+        });
+
+        it('reports usage even when the answer was unusable', async () => {
+            const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-claude-'));
+            const fake = path.join(dir, 'claude');
+            fs.writeFileSync(fake, `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on('end', () => console.log(JSON.stringify({ type: 'result', subtype: 'success', num_turns: 1, usage: { output_tokens: 7 } })));
+`);
+            fs.chmodSync(fake, 0o755);
+            const seen: number[] = [];
+            try {
+                await assert.rejects(generateWithClaudeCode(schema, 'sys', 'p', {
+                    model: '', workDir: dir, allowTools: false, maxTurns: 1, command: fake,
+                    onUsage: usage => seen.push(usage.outputTokens),
+                }));
+                assert.deepEqual(seen, [7]);
+            } finally {
+                fs.rmSync(dir, { recursive: true, force: true });
+            }
         });
     });
 });

@@ -149,6 +149,7 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 | `model` | AI Model ID to execute | `'gemini-3.8-flash'` |
 | `fallback_provider` | Backup AI provider used for the rest of the run once the primary reports an exhausted token/credit allowance. Empty disables the fallback | `''` |
 | `fallback_model` | Model ID for the backup provider. Empty uses that provider's default | `''` |
+| `triage_model` | Model for the triage request that picks which files of a large window to review. Empty means `haiku` on the `claude-code` provider and the main model otherwise | `''` |
 | `claude_code_oauth_token` | Claude subscription token from `claude setup-token`, used by the `claude-code` provider | `''` |
 | `test_command` | Command to run tests | `'go test ./...'` |
 | `test_timeout` | Timeout for test execution in minutes | `5` |
@@ -163,7 +164,7 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 | `max_line_diff` | Hard cap on total diff lines to non-test files per atomic PR | `100` |
 | `max_test_line_diff` | Hard cap on total diff lines to test files per atomic PR (counted separately from `max_line_diff`) | `200` |
 | `enforce_line_budget` | Reject proposals whose measured diff exceeds the caps above (set `false` for prompt-only guidance) | `true` |
-| `max_concurrency` | Maximum number of fixes to process in parallel (via git worktrees) per run | `3` |
+| `max_concurrency` | Maximum number of fixes to process in parallel (via git worktrees) per run. Empty means 3, or 1 on the `claude-code` provider | `''` |
 | `reviewers` | Comma-separated GitHub handles or teams to request review | `''` |
 | `assignees` | Comma-separated GitHub usernames to assign each PR to (`@me` for the token owner). Reviewers alone do not put a PR in someone's "assigned to me" queue or the GitHub mobile app; assignees do. Teams cannot be assigned. | `''` |
 | `draft_pr` | Open PRs in Draft state | `true` |
@@ -360,6 +361,13 @@ The `claude-code` provider bills a Claude Pro or Max plan instead of an API key.
 ```
 
 The action installs the CLI when either `provider` or `fallback_provider` is `claude-code`. Workspace inspection uses Claude Code's own read-only tools (`Read`, `Grep`, `Glob`), bounded by `max_llm_tool_steps`; nothing the model does through the CLI can write files or run commands, so every change still goes through the janitor's edit, lint and test pipeline. A spent plan (`You've hit your limit`) counts as out of tokens, so a configured fallback takes over for the rest of the run.
+
+**What it does differently to save your allowance.** On a subscription every token comes out of the same allowance as your own Claude use, so the provider spends less of it:
+
+- **Nothing is sent twice.** Claude Code already loads the workspace's root `CLAUDE.md`, so it is left out of the prompt. With workspace tools on, the changed files and example tests are listed by path for Claude to open with `Read` as needed, rather than pasted whole into every request.
+- **Triage runs on Haiku.** Picking which files of a large window to review needs only the commit log and a file stat, so it goes to `haiku` unless `triage_model` says otherwise. Fix proposals and auto-fixes stay on `model`.
+- **One fix at a time.** `max_concurrency` defaults to 1 here, so parallel auto-fix retries do not race through the plan. Set it explicitly to run fixes in parallel anyway.
+- **Usage in the job summary.** Each run's summary has a *Claude Code usage* row: requests, turns, input (and how much was cached) and output tokens, plus what that would have cost at API prices, as a gauge of how much of the plan a sweep takes.
 
 **Keep it to your own repositories.** Anthropic's terms allow a subscription token to drive Claude Code for your own ordinary use, which a scheduled sweep of your own repos is. They do not allow sharing one person's subscription across other people's repositories or offering it as a service; use an API key (`provider: 'anthropic'`) for that. Runs draw on the same usage limits as your interactive Claude use.
 

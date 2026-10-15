@@ -30,12 +30,13 @@ import {
     describeModel,
     triageMaxFiles,
     triageResponseSchema,
+    triageModelName,
 } from './config.js';
 import { applyEdits } from './edits.js';
 import { runVerification, logFailedDiff, runCmd } from './git.js';
 import { withLlmRetry } from './retry.js';
 import { ModelFallback, resolveFallbackChoice } from './fallback.js';
-import { recordNote, getSummary } from './summary.js';
+import { recordNote, getSummary, recordClaudeCodeUsage } from './summary.js';
 import { CLAUDE_CODE_PROVIDER, generateWithClaudeCode } from './claudecode.js';
 import { isTestFilePath } from './paths.js';
 
@@ -294,16 +295,54 @@ export const modelFallback = new ModelFallback({
  * a structured `output` spec instead, letting the model call tools across multiple
  * steps (bounded by `stopWhen: stepCountIs(...)`) before producing its final response.
  */
+/**
+ * One request's prompt, in the form every provider gets and the leaner form the
+ * claude-code provider gets. Which one is sent is only known once the fallback has
+ * picked the model, so both are built up front.
+ */
+export interface PromptVariants {
+    full: string;
+    claudeCode: string;
+}
+
+export function selectPrompt(prompt: string | PromptVariants, providerName: string): string {
+    if (typeof prompt === 'string') return prompt;
+    return providerName === CLAUDE_CODE_PROVIDER ? prompt.claudeCode : prompt.full;
+}
+
+/**
+ * Lists files by path for a claude-code request that can read them itself, instead of
+ * pasting their contents. Returns '' when there is nothing to list.
+ */
+export function formatFilesToRead(heading: string, filePaths: string[]): string {
+    if (filePaths.length === 0) return '';
+    return `\n\n${heading} (open them with the Read tool as needed; they are not pasted here):\n${filePaths.map(p => `- ${p}`).join('\n')}`;
+}
+
+interface StructuredRequestOptions {
+    /**
+     * Model to use instead of the configured one while the primary provider is serving.
+     * Ignored after a switch to the fallback, which keeps its own model.
+     */
+    primaryModelOverride?: string;
+}
+
 async function generateStructuredWithTools<T extends z.ZodTypeAny>(
     schema: T,
     system: string,
-    prompt: string,
+    promptVariants: string | PromptVariants,
     tools: ReturnType<typeof createJanitorTools>,
-    workDir: string = process.cwd()
+    workDir: string = process.cwd(),
+    options: StructuredRequestOptions = {}
 ): Promise<z.infer<T>> {
     // Every request goes through the fallback so that the first "out of tokens" answer
     // from the primary retires it and the rest of the run continues on the backup.
-    return modelFallback.run(choice => {
+    return modelFallback.run(served => {
+        const isPrimary = served.provider === provider && served.model === modelName;
+        const choice = isPrimary && options.primaryModelOverride
+            ? { provider: served.provider, model: options.primaryModelOverride }
+            : served;
+        const prompt = selectPrompt(promptVariants, choice.provider);
         // `maxRetries: 0` disables the SDK's own retry loop so that retrying happens in
         // exactly one place: `withLlmRetry`, which also covers unparseable structured
         // output and logs each attempt.
@@ -322,6 +361,7 @@ async function generateStructuredWithTools<T extends z.ZodTypeAny>(
                 workDir,
                 allowTools: Boolean(tools),
                 maxTurns: maxLlmToolSteps,
+                onUsage: recordClaudeCodeUsage,
             }), retryOptions);
         }
 
@@ -508,8 +548,18 @@ export function collectAgentFiles(workDir: string = process.cwd()): string[] {
     return agentPaths;
 }
 
-export function getAgentFilesContext(workDir: string = process.cwd(), maxBytesPerFile: number = 40000): string {
-    const filePaths = collectAgentFiles(workDir);
+/**
+ * The agent files Claude Code loads into its own context at startup: the workspace-root
+ * CLAUDE.md, in either of its two homes. Pasting them into a claude-code prompt as well
+ * would pay for them twice.
+ */
+export function isLoadedByClaudeCode(relPath: string): boolean {
+    const lower = relPath.replace(/\\/g, '/').toLowerCase();
+    return lower === 'claude.md' || lower === '.claude/claude.md';
+}
+
+export function getAgentFilesContext(workDir: string = process.cwd(), maxBytesPerFile: number = 40000, forClaudeCode: boolean = false): string {
+    const filePaths = collectAgentFiles(workDir).filter(p => !(forClaudeCode && isLoadedByClaudeCode(p)));
     if (filePaths.length === 0) {
         return '';
     }
@@ -713,6 +763,59 @@ export function getSiblingTestContexts(
     return contexts.join('\n\n');
 }
 
+const TEST_CONVENTIONS_HEADING = 'Existing test files from this repository (follow these conventions exactly when writing tests)';
+
+export interface ProposalPromptParts {
+    /** The diff or the build log the request is about. */
+    lead: string;
+    workDir: string;
+    /** Every agent file, for providers that load none of them on their own. */
+    agentContexts: string;
+    sourceHeading: string;
+    sourcePaths: string[];
+    sourceContexts: string;
+    testPaths: string[];
+    testContexts: string;
+    /** Already formatted, heading included, or ''. */
+    existingPRContext: string;
+    /** Whether the model can read files itself on this request. */
+    canRead: boolean;
+}
+
+/**
+ * Builds a proposal request's prompt twice. The full form pastes every agent file, the
+ * changed files and the example tests. The claude-code form leaves out the root
+ * CLAUDE.md, which Claude Code has already loaded, and, when the model can read files
+ * itself, lists the changed files and example tests by path instead of pasting them:
+ * on a subscription, every pasted file is allowance spent whether or not it was needed.
+ */
+export function buildProposalPrompts(parts: ProposalPromptParts): PromptVariants {
+    const agentSection = (contexts: string) =>
+        contexts ? `\n\nProject Agent Instructions & Repository Guidelines:\n\n${contexts}` : '';
+    const pasted = (heading: string, contexts: string) => contexts ? `\n\n${heading}:\n\n${contexts}` : '';
+
+    const full = parts.lead
+        + agentSection(parts.agentContexts)
+        + pasted(parts.sourceHeading, parts.sourceContexts)
+        + pasted(TEST_CONVENTIONS_HEADING, parts.testContexts)
+        + parts.existingPRContext;
+
+    const claudeAgents = agentSection(getAgentFilesContext(parts.workDir, undefined, true));
+    const claudeCode = parts.canRead
+        ? parts.lead
+            + claudeAgents
+            + formatFilesToRead('Files changed in this window', parts.sourcePaths)
+            + formatFilesToRead(TEST_CONVENTIONS_HEADING, parts.testPaths)
+            + parts.existingPRContext
+        : parts.lead
+            + claudeAgents
+            + pasted(parts.sourceHeading, parts.sourceContexts)
+            + pasted(TEST_CONVENTIONS_HEADING, parts.testContexts)
+            + parts.existingPRContext;
+
+    return { full, claudeCode };
+}
+
 export async function generateRepairProposals(buildErrorLogs: string, workDir: string = process.cwd(), existingPRContext: string = ''): Promise<FixProposal[]> {
     const agentContexts = getAgentFilesContext(workDir);
     const agentFilePaths = new Set(collectAgentFiles(workDir));
@@ -721,6 +824,7 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
     const filePaths = rawFilePaths.filter(p => !agentFilePaths.has(p));
     const fileContexts = getFullFileContexts(filePaths, workDir);
     const testContexts = getSiblingTestContexts(filePaths, workDir);
+    const testPaths = findSiblingTestFiles(filePaths, workDir);
     const tools = createJanitorTools(workDir);
 
     const repairPrompt = `
@@ -747,22 +851,23 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
     15. NO DUPLICATE PROPOSALS: If a list of pull requests the janitor has already submitted is provided, do NOT re-propose any fix those PRs already cover. This sweep runs on a schedule and re-observes the same failures until the pending fix is merged; an open PR means the repair is already awaiting review, and a closed unmerged PR means a human rejected that approach. Propose only genuinely new fixes, and return an empty 'fixes' list if every remaining failure is already covered.
   `;
 
-    let promptText = `Build/Test Error Logs:\n\n${buildErrorLogs.slice(0, 15000)}`;
-    if (agentContexts) {
-        promptText += `\n\nProject Agent Instructions & Repository Guidelines:\n\n${agentContexts}`;
-    }
-    if (fileContexts) {
-        promptText += `\n\nFull contents of relevant source files:\n\n${fileContexts}`;
-    }
-    if (testContexts) {
-        promptText += `\n\nExisting test files from this repository (follow these conventions exactly when writing tests):\n\n${testContexts}`;
-    }
-    if (existingPRContext) {
-        promptText += `\n\nPull requests the Code Janitor has ALREADY submitted (do NOT re-propose these fixes):\n\n${existingPRContext}`;
-    }
+    const prompts = buildProposalPrompts({
+        lead: `Build/Test Error Logs:\n\n${buildErrorLogs.slice(0, 15000)}`,
+        workDir,
+        agentContexts,
+        sourceHeading: 'Full contents of relevant source files',
+        sourcePaths: filePaths,
+        sourceContexts: fileContexts,
+        testPaths,
+        testContexts,
+        existingPRContext: existingPRContext
+            ? `\n\nPull requests the Code Janitor has ALREADY submitted (do NOT re-propose these fixes):\n\n${existingPRContext}`
+            : '',
+        canRead: Boolean(tools),
+    });
 
     console.log("🔧 Querying model for repair proposals...");
-    const result = await generateStructuredWithTools(fixesResponseSchema, repairPrompt, promptText, tools, workDir);
+    const result = await generateStructuredWithTools(fixesResponseSchema, repairPrompt, prompts, tools, workDir);
 
     if (result.fixes.length > maxPRs) {
         console.log(`⚠️ Model returned ${result.fixes.length} repair proposals; capping to maxPRs (${maxPRs}).`);
@@ -801,7 +906,9 @@ export async function selectFilesForReview(overview: string, candidates: string[
     }
 
     console.log(`🗂️ Asking the model which of ${candidates.length} changed files to review...`);
-    const result = await generateStructuredWithTools(triageResponseSchema, systemPrompt, promptText, undefined);
+    const result = await generateStructuredWithTools(triageResponseSchema, systemPrompt, promptText, undefined, process.cwd(), {
+        primaryModelOverride: triageModelName || undefined,
+    });
 
     const picked = normalizeTriagePicks(result.files, candidates, triageMaxFiles);
     console.log(`  Picked ${picked.length}: ${picked.join(', ') || '(none)'}${result.reason ? ` -- ${result.reason}` : ''}`);
@@ -816,6 +923,7 @@ export async function generateFixProposals(diff: string, workDir: string = proce
     const filePaths = rawFilePaths.filter(p => !agentFilePaths.has(p));
     const fileContexts = getFullFileContexts(filePaths, workDir);
     const testContexts = enableTestGen ? getSiblingTestContexts(filePaths, workDir) : '';
+    const testPaths = enableTestGen ? findSiblingTestFiles(filePaths, workDir) : [];
     const tools = createJanitorTools(workDir);
 
     const systemPrompt = `
@@ -841,22 +949,23 @@ export async function generateFixProposals(diff: string, workDir: string = proce
     16. NO DUPLICATE PROPOSALS: If a list of pull requests the janitor has already submitted is provided, do NOT re-propose any improvement those PRs already cover. An open PR means that change is already awaiting review; a closed unmerged PR means a human rejected that approach.
   `;
 
-    let promptText = `Recent codebase diffs:\n\n${diff.slice(0, 15000)}`;
-    if (agentContexts) {
-        promptText += `\n\nProject Agent Instructions & Repository Guidelines:\n\n${agentContexts}`;
-    }
-    if (fileContexts) {
-        promptText += `\n\nFull contents of modified files in recent diffs:\n\n${fileContexts}`;
-    }
-    if (testContexts) {
-        promptText += `\n\nExisting test files from this repository (follow these conventions exactly when writing tests):\n\n${testContexts}`;
-    }
-    if (existingPRContext) {
-        promptText += `\n\nPull requests the Code Janitor has ALREADY submitted (do NOT re-propose these changes):\n\n${existingPRContext}`;
-    }
+    const prompts = buildProposalPrompts({
+        lead: `Recent codebase diffs:\n\n${diff.slice(0, 15000)}`,
+        workDir,
+        agentContexts,
+        sourceHeading: 'Full contents of modified files in recent diffs',
+        sourcePaths: filePaths,
+        sourceContexts: fileContexts,
+        testPaths,
+        testContexts,
+        existingPRContext: existingPRContext
+            ? `\n\nPull requests the Code Janitor has ALREADY submitted (do NOT re-propose these changes):\n\n${existingPRContext}`
+            : '',
+        canRead: Boolean(tools),
+    });
 
     console.log("🤖 Querying model for refactor proposals...");
-    const result = await generateStructuredWithTools(fixesResponseSchema, systemPrompt, promptText, tools, workDir);
+    const result = await generateStructuredWithTools(fixesResponseSchema, systemPrompt, prompts, tools, workDir);
 
     if (result.fixes.length > maxPRs) {
         console.log(`⚠️ Model returned ${result.fixes.length} refactor proposals; capping to maxPRs (${maxPRs}).`);

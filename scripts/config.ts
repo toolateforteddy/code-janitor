@@ -2,6 +2,7 @@ import { google } from '@ai-sdk/google';
 import { anthropic } from '@ai-sdk/anthropic';
 import { openai } from '@ai-sdk/openai';
 import { z } from 'zod';
+import { CLAUDE_CODE_PROVIDER } from './claudecode.js';
 
 // Set API key fallback for Google provider
 if (process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
@@ -90,7 +91,32 @@ export function parseAssignees(raw: string | undefined): { assignees: string[]; 
 
 export const { assignees, rejected: rejectedAssignees } = parseAssignees(process.env.ASSIGNEES);
 export const isDraft = process.env.DRAFT_PR === 'true';
-export const maxConcurrency = parseInt(process.env.MAX_CONCURRENCY || '3', 10);
+/**
+ * Fixes processed in parallel. Unset means 3, except on the claude-code provider, where
+ * every request draws on one person's subscription allowance and running fixes one at
+ * a time keeps a run from spending it on several parallel auto-fix retries at once.
+ */
+export function resolveMaxConcurrency(prov: string, raw: string | undefined): number {
+    const parsed = parseInt((raw ?? '').trim(), 10);
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+    return prov === CLAUDE_CODE_PROVIDER ? 1 : 3;
+}
+
+export const maxConcurrency = resolveMaxConcurrency(provider, process.env.MAX_CONCURRENCY);
+
+/**
+ * Model for the triage request, which only picks which changed files to review from a
+ * commit log and a file stat. Unset means Haiku on the claude-code provider, where it
+ * saves subscription allowance for the requests that write code, and the main model
+ * everywhere else. An empty result means "no override".
+ */
+export function resolveTriageModel(prov: string, raw: string | undefined): string {
+    const explicit = (raw ?? '').trim();
+    if (explicit) return explicit;
+    return prov === CLAUDE_CODE_PROVIDER ? 'haiku' : '';
+}
+
+export const triageModelName = resolveTriageModel(provider, process.env.TRIAGE_MODEL);
 export const enableLlmTools = process.env.ENABLE_LLM_TOOLS !== 'false';
 export const maxLlmToolSteps = parseInt(process.env.MAX_LLM_TOOL_STEPS || '5', 10);
 
