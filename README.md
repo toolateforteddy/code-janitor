@@ -351,7 +351,7 @@ If the backup is exhausted too — or no fallback is configured — the error pr
 The `claude-code` provider bills a Claude Pro or Max plan instead of an API key. It runs each request through the Claude Code CLI (`claude -p`) rather than calling a model API itself, because a subscription token is only accepted by Claude Code: Anthropic does not allow it to be used from other API clients, the `anthropic` provider here included.
 
 1. On your own machine, run `claude setup-token` and approve it in the browser. It prints a token valid for a year.
-2. Save it as a repository secret named `CLAUDE_CODE_OAUTH_TOKEN`.
+2. Save it as a repository secret named `CLAUDE_CODE_OAUTH_TOKEN`. The token is one line; if your terminal wrapped it, the janitor strips the line breaks a paste picks up.
 3. Point the janitor at it:
 
 ```yaml

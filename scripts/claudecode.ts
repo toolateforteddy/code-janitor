@@ -83,9 +83,17 @@ export function buildClaudeCodeArgs(req: ClaudeCodeRequest): string[] {
  * whatever `anthropic_api_key` was given (possibly empty) for the `anthropic` provider,
  * so when a subscription token is present the key is dropped to make sure the
  * subscription is what pays.
+ *
+ * The token is also stripped of whitespace. `claude setup-token` prints it wrapped
+ * across lines in a narrow terminal, so a copy-pasted secret can carry a line break
+ * that the CLI rejects as an invalid Authorization header. A real token never
+ * contains whitespace, so removing it cannot corrupt one.
  */
 export function buildClaudeCodeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     const child = { ...env };
+    if (child.CLAUDE_CODE_OAUTH_TOKEN) {
+        child.CLAUDE_CODE_OAUTH_TOKEN = child.CLAUDE_CODE_OAUTH_TOKEN.replace(/\s+/g, '');
+    }
     if (child.CLAUDE_CODE_OAUTH_TOKEN || !child.ANTHROPIC_API_KEY) {
         delete child.ANTHROPIC_API_KEY;
     }
