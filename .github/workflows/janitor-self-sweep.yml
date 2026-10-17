@@ -13,12 +13,12 @@ on:
         description: 'AI provider (google, anthropic, openai, claude-code)'
         type: string
         required: false
-        default: 'google'
+        default: 'claude-code'
       model:
         description: 'Model ID to execute'
         type: string
         required: false
-        default: 'gemini-3.8-flash'
+        default: 'sonnet'
       janitor_mode:
         description: 'Execution mode (auto, repair-only, refactor-only)'
         type: string
@@ -46,11 +46,11 @@ jobs:
       - name: Run Code Janitor on itself
         uses: ./
         with:
-          provider: ${{ inputs.provider || 'google' }}
-          model: ${{ inputs.model || 'gemini-3.8-flash' }}
-          # Keep sweeping when the primary provider's allowance is spent, but only
-          # when a key for the backup is actually configured.
-          fallback_provider: ${{ secrets.ANTHROPIC_API_KEY != '' && 'anthropic' || '' }}
+          # Runs on Teddy's own Claude subscription through the Claude Code CLI.
+          provider: ${{ inputs.provider || 'claude-code' }}
+          model: ${{ inputs.model || 'sonnet' }}
+          # Gemini picks up the rest of the run once the plan's usage window is spent.
+          fallback_provider: ${{ (inputs.provider || 'claude-code') == 'claude-code' && 'google' || '' }}
           janitor_mode: ${{ inputs.janitor_mode || 'auto' }}
           max_prs_per_run: ${{ inputs.max_prs_per_run || '3' }}
           # The engine lives in scripts/; its tests and typecheck are what CI runs.
@@ -69,5 +69,5 @@ jobs:
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          # Used only when provider is claude-code: bills Teddy's own Claude subscription.
+          # Bills Teddy's own Claude subscription; never use it on someone else's repository.
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
