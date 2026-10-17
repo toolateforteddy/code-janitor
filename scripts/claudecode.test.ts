@@ -50,6 +50,11 @@ describe('claudecode', () => {
             assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, 'oat');
         });
 
+        it('removes the line breaks a terminal-wrapped token picks up when pasted', () => {
+            const env = buildClaudeCodeEnv({ CLAUDE_CODE_OAUTH_TOKEN: '  sk-ant-oat01-abc\r\ndef\n  ghi \n' });
+            assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, 'sk-ant-oat01-abcdefghi');
+        });
+
         it('drops an empty API key, which would otherwise shadow a local login', () => {
             assert.ok(!('ANTHROPIC_API_KEY' in buildClaudeCodeEnv({ ANTHROPIC_API_KEY: '' })));
         });
