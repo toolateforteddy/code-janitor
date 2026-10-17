@@ -140,6 +140,57 @@ describe('agent', () => {
         }
     });
 
+    it('builds the agent prompt from the fix, adding a truncated failure only on a retry', () => {
+        const first = agent.buildAgentPrompt(FIX);
+        assert.ok(first.includes(FIX.title));
+        assert.ok(first.includes(FIX.description));
+        assert.ok(first.includes('- math.js'));
+        assert.ok(!first.includes('rejected it'));
+
+        const retry = agent.buildAgentPrompt(FIX, { step: 'test', output: 'x'.repeat(20000) });
+        assert.ok(retry.includes('test step'));
+        const failureSection = retry.split('step:\n\n')[1].split('\n\nRevise')[0];
+        assert.equal(failureSection.split('x').length - 1, 12000);
+
+        const { plannedFiles: _unused, ...unplanned } = FIX;
+        assert.ok(!agent.buildAgentPrompt(unplanned).includes('Files the plan expects'));
+    });
+
+    it('lists a rename by its new path only, and untracked files one by one', () => {
+        dir = repo();
+        try {
+            execFileSync('git', ['mv', 'math.test.js', 'renamed.test.js'], { cwd: dir });
+            fs.mkdirSync(path.join(dir, 'sub'));
+            fs.writeFileSync(path.join(dir, 'sub', 'a.js'), 'module.exports = 1;\n');
+            const listed = agent.listChangedPaths(dir);
+            assert.ok(listed.includes('renamed.test.js'));
+            assert.ok(!listed.includes('math.test.js'));
+            assert.ok(listed.includes('sub/a.js'));
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('does not collect deleted files', () => {
+        dir = repo();
+        try {
+            fs.rmSync(path.join(dir, 'math.test.js'));
+            const { changes } = agent.collectAgentChanges(dir, new Set<string>());
+            assert.ok(!changes.some(c => c.filePath === 'math.test.js'));
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('fails the check with no-changes on an unchanged repo', () => {
+        dir = repo();
+        try {
+            assert.equal(agent.checkAgentChanges(dir, new Set<string>()).failedStep, 'no-changes');
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
     it('writes a verify script outside the worktree that runs the configured checks', () => {
         dir = repo();
         const verify = agent.writeVerifyScript(dir, '', process.env.TEST_CMD!);
