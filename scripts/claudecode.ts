@@ -30,9 +30,34 @@ export interface ClaudeCodeRequest {
     allowTools: boolean;
     /** Agentic turns allowed, tool calls included. */
     maxTurns: number;
+    /**
+     * Lets the model change files and run one command: the worktree's verify script.
+     * File edits are accepted only inside the working directory (`acceptEdits`), and
+     * Bash is allowed for that exact command alone; anything else is denied, since a
+     * `-p` run has nobody to approve it.
+     */
+    agent?: { verifyCommand: string };
 }
 
+/** Tools the implementing agent gets: read, edit, and Bash for the verify script only. */
+export const CLAUDE_CODE_AGENT_TOOLS = [...CLAUDE_CODE_READ_ONLY_TOOLS, 'Edit', 'Write', 'Bash'];
+
 export function buildClaudeCodeArgs(req: ClaudeCodeRequest): string[] {
+    if (req.agent) {
+        return [
+            '-p',
+            '--output-format', 'json',
+            '--json-schema', JSON.stringify(req.jsonSchema),
+            '--system-prompt', req.system,
+            '--tools', CLAUDE_CODE_AGENT_TOOLS.join(','),
+            '--allowedTools', [...CLAUDE_CODE_READ_ONLY_TOOLS, `Bash(${req.agent.verifyCommand})`].join(','),
+            '--permission-mode', 'acceptEdits',
+            '--no-session-persistence',
+            '--strict-mcp-config',
+            '--max-turns', String(Math.max(1, req.maxTurns)),
+            ...(req.model ? ['--model', req.model] : []),
+        ];
+    }
     const tools = req.allowTools ? CLAUDE_CODE_READ_ONLY_TOOLS.join(',') : '';
     const args = [
         '-p',
@@ -177,6 +202,7 @@ export interface ClaudeCodeOptions {
     allowTools: boolean;
     maxTurns: number;
     timeoutMs?: number;
+    agent?: { verifyCommand: string };
     /** Executable to run. Overridable for tests. */
     command?: string;
     /** Called with what each request consumed, whether or not its answer was usable. */
@@ -199,6 +225,7 @@ export function generateWithClaudeCode<T extends z.ZodTypeAny>(
         model: options.model,
         allowTools: options.allowTools,
         maxTurns: options.maxTurns,
+        agent: options.agent,
     });
 
     return new Promise((resolve, reject) => {

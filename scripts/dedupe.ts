@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { FixProposal, getProposalChanges, JANITOR_BRANCH_PREFIX } from './config.js';
+import { FixProposal, proposalFilePaths, JANITOR_BRANCH_PREFIX } from './config.js';
 
 /**
  * A previously-opened Code Janitor pull request, used to suppress re-proposing a fix
@@ -139,7 +139,7 @@ export function findDuplicatePR(
 ): ExistingJanitorPR | null {
     const slug = normalizeSlug(fix.slug);
     const title = normalizeTitle(fix.title);
-    const fileSet = normalizeFileSet(getProposalChanges(fix).map(c => c.filePath));
+    const fileSet = normalizeFileSet(proposalFilePaths(fix));
 
     for (const pr of existingPRs) {
         if (slug && normalizeSlug(pr.slug) === slug) return pr;
@@ -184,7 +184,7 @@ export function filterDuplicateProposals(
             title: fix.title,
             headRefName: `${JANITOR_BRANCH_PREFIX}${fix.slug}`,
             slug: fix.slug,
-            files: getProposalChanges(fix).map(c => c.filePath),
+            files: proposalFilePaths(fix),
             state: 'open',
         });
     }

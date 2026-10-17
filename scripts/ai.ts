@@ -31,6 +31,9 @@ import {
     triageMaxFiles,
     triageResponseSchema,
     triageModelName,
+    claudeCodeAgent,
+    plansResponseSchema,
+    planToProposal,
 } from './config.js';
 import { applyEdits } from './edits.js';
 import { runVerification, logFailedDiff, runCmd } from './git.js';
@@ -288,6 +291,41 @@ export const modelFallback = new ModelFallback({
         );
     },
 });
+
+/**
+ * True when fixes this run are planned here and implemented by Claude Code in the
+ * worktree (see agent.ts), rather than written out as edits in the proposal itself.
+ */
+export function agentFlowActive(): boolean {
+    return claudeCodeAgent && modelFallback.active.provider === CLAUDE_CODE_PROVIDER;
+}
+
+/**
+ * Appended to a proposal request's rules in the agent flow. The model only plans: a
+ * separate Claude Code run in each fix's worktree writes the code and runs the checks,
+ * so writing it here as well would be paid for twice and thrown away.
+ */
+export const PLAN_ONLY_RULE = `
+    OUTPUT FORMAT OVERRIDE (this supersedes every rule above about 'changes', 'edits', 'updatedContent' and trailing newlines):
+    Do NOT write any code. Each fix is implemented afterwards by a separate engineer who edits the files and runs the lint and test commands in a fresh checkout.
+    For each fix return its slug, title, the files it will create or modify (tests included), and a description precise enough to implement without guessing: which functions change and how, which edge cases, which tests to add and where.
+    Every other rule above (atomicity, line budgets, test conventions, no duplicates) still applies to the fix you describe.
+`;
+
+/** Asks for proposals as plans in the agent flow, or as written code otherwise. */
+async function generateProposals(
+    system: string,
+    prompts: PromptVariants,
+    tools: ReturnType<typeof createJanitorTools>,
+    workDir: string
+): Promise<FixProposal[]> {
+    if (agentFlowActive()) {
+        const plans = await generateStructuredWithTools(plansResponseSchema, system + PLAN_ONLY_RULE, prompts, tools, workDir);
+        return plans.fixes.map(planToProposal);
+    }
+    const result = await generateStructuredWithTools(fixesResponseSchema, system, prompts, tools, workDir);
+    return result.fixes;
+}
 
 /**
  * Generates a schema-typed object from the model. `generateObject` does not accept
@@ -867,12 +905,12 @@ export async function generateRepairProposals(buildErrorLogs: string, workDir: s
     });
 
     console.log("🔧 Querying model for repair proposals...");
-    const result = await generateStructuredWithTools(fixesResponseSchema, repairPrompt, prompts, tools, workDir);
+    const fixes = await generateProposals(repairPrompt, prompts, tools, workDir);
 
-    if (result.fixes.length > maxPRs) {
-        console.log(`⚠️ Model returned ${result.fixes.length} repair proposals; capping to maxPRs (${maxPRs}).`);
+    if (fixes.length > maxPRs) {
+        console.log(`⚠️ Model returned ${fixes.length} repair proposals; capping to maxPRs (${maxPRs}).`);
     }
-    return result.fixes.slice(0, maxPRs);
+    return fixes.slice(0, maxPRs);
 }
 
 
@@ -965,12 +1003,12 @@ export async function generateFixProposals(diff: string, workDir: string = proce
     });
 
     console.log("🤖 Querying model for refactor proposals...");
-    const result = await generateStructuredWithTools(fixesResponseSchema, systemPrompt, prompts, tools, workDir);
+    const fixes = await generateProposals(systemPrompt, prompts, tools, workDir);
 
-    if (result.fixes.length > maxPRs) {
-        console.log(`⚠️ Model returned ${result.fixes.length} refactor proposals; capping to maxPRs (${maxPRs}).`);
+    if (fixes.length > maxPRs) {
+        console.log(`⚠️ Model returned ${fixes.length} refactor proposals; capping to maxPRs (${maxPRs}).`);
     }
-    return result.fixes.slice(0, maxPRs);
+    return fixes.slice(0, maxPRs);
 }
 
 /**

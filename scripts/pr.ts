@@ -18,7 +18,9 @@ import {
     JANITOR_BRANCH_PREFIX,
     JANITOR_AUTHOR_EMAIL,
     JANITOR_TRAILER,
+    isPlannedFix,
 } from './config.js';
+import { implementFixWithAgent } from './agent.js';
 import { applyEdits } from './edits.js';
 import { runVerification, logFailedDiff, cleanupWorktree } from './git.js';
 import { prepareWorktreeDependencies } from './deps.js';
@@ -202,6 +204,29 @@ export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir:
     }
 }
 
+/**
+ * Implements a planned fix with the Claude Code agent in `workDir` (already on
+ * `branchName`), then records the outcome and opens the PR exactly as the edit flow does.
+ */
+async function finishAgentFix(fix: FixProposal, branchName: string, workDir: string, modeType: 'repair' | 'refactor'): Promise<boolean> {
+    const outcome = await implementFixWithAgent(fix, workDir);
+    if (outcome.failedStep === 'no-changes') {
+        console.warn(`⚠️ Claude Code made no changes for '${fix.slug}'.${outcome.summary ? ` It said: ${outcome.summary}` : ''}`);
+        recordFixResult({ slug: fix.slug, title: fix.title, modeType, outcome: 'no-changes', detail: 'Claude Code left the worktree unchanged' });
+        return false;
+    }
+    if (!outcome.success) {
+        console.error(`❌ Verification failed for fix '${fix.slug}' at ${outcome.failedStep}:\n${outcome.failureOutput.slice(0, 4000)}`);
+        recordFixResult({ slug: fix.slug, title: fix.title, modeType, outcome: 'verification-failed', detail: `Failed at ${outcome.failedStep}` });
+        return false;
+    }
+    console.log(`📏 Line budget for '${fix.slug}': ${formatLineBudgetSummary(outcome.originalContents, outcome.changes)}`);
+    const described: FixProposal = outcome.summary
+        ? { ...fix, description: `${fix.description}\n\n**What Claude Code changed:** ${outcome.summary}` }
+        : fix;
+    return createAndSubmitPR(described, branchName, workDir, modeType, outcome.changes);
+}
+
 export async function processFixWorktree(fix: FixProposal, defaultBranch: string, modeType: 'repair' | 'refactor' = 'refactor'): Promise<boolean> {
     const timestamp = Date.now();
     const branchName = `${JANITOR_BRANCH_PREFIX}${fix.slug}-${timestamp}`;
@@ -211,6 +236,12 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
     try {
         console.log(`\n--- Processing Fix (Worktree): ${fix.title} ---`);
         execFileSync('git', ['worktree', 'add', '-b', branchName, worktreePath, defaultBranch]);
+
+        if (isPlannedFix(fix)) {
+            // The agent runs the checks as it works, so dependencies go in first.
+            prepareWorktreeDependencies(mainWorkspace, worktreePath);
+            return await finishAgentFix(fix, branchName, worktreePath, modeType);
+        }
 
         const changes = getProposalChanges(fix);
         const { originalContents, editFailures } = applyChangesToWorkspace(worktreePath, changes, { remapPaths: true, label: fix.slug });
@@ -292,6 +323,17 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
     execFileSync('git', ['checkout', '-b', branchName]);
 
     try {
+        if (isPlannedFix(fix)) {
+            const created = await finishAgentFix(fix, branchName, workDir, modeType);
+            if (!created) {
+                try {
+                    execFileSync('git', ['checkout', defaultBranch]);
+                    execFileSync('git', ['reset', '--hard', defaultBranch]);
+                } catch { /* ignore */ }
+            }
+            return created;
+        }
+
         const changes = getProposalChanges(fix);
         const { originalContents, editFailures } = applyChangesToWorkspace(workDir, changes, { label: fix.slug });
 

@@ -158,6 +158,18 @@ inputs:
     description: 'OpenAI API Key'
     required: false
     default: ''
+  claude_code_agent:
+    description: 'On the claude-code provider, have Claude Code implement each fix in its worktree (editing files and running the lint/test commands itself) instead of returning edits for the janitor to apply. The janitor still checks integrity, line budgets, lint and tests itself before opening a PR. Set false to go back to returned edits.'
+    required: false
+    default: 'true'
+  claude_code_agent_max_turns:
+    description: 'Turns the implementing agent may take per pass (reads, edits and check runs together). Each fix gets at most two passes.'
+    required: false
+    default: '40'
+  trust_claude_checks:
+    description: 'On the claude-code agent flow, skip the janitor''s own lint and test run when Claude Code''s last check run passed on exactly the files being committed. Saves Actions runner minutes, which matters on private repositories (public ones run free); the PR''s CI still runs the same checks before merge.'
+    required: false
+    default: 'false'
   claude_code_oauth_token:
     description: 'Claude subscription token from `claude setup-token`, used by the claude-code provider. Bills your own Pro/Max plan instead of an API key; use it only for repositories you run the janitor on yourself.'
     required: false
@@ -294,6 +306,9 @@ runs:
         FALLBACK_AI_PROVIDER: ${{ inputs.fallback_provider }}
         FALLBACK_AI_MODEL: ${{ inputs.fallback_model }}
         TRIAGE_MODEL: ${{ inputs.triage_model }}
+        CLAUDE_CODE_AGENT: ${{ inputs.claude_code_agent }}
+        CLAUDE_CODE_AGENT_MAX_TURNS: ${{ inputs.claude_code_agent_max_turns }}
+        TRUST_CLAUDE_CHECKS: ${{ inputs.trust_claude_checks }}
         TEST_CMD: ${{ inputs.test_command }}
         TEST_TIMEOUT: ${{ inputs.test_timeout }}
         LINT_CMD: ${{ inputs.lint_command }}
