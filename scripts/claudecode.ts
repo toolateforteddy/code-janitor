@@ -1,4 +1,6 @@
-import { spawn } from 'child_process';
+import { execSync, spawn } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 import { NoOutputGeneratedError } from 'ai';
 import { z } from 'zod';
 
@@ -209,6 +211,25 @@ export interface ClaudeCodeOptions {
     onUsage?: (usage: ClaudeCodeUsage) => void;
 }
 
+/**
+ * How to start the CLI. On Windows, npm installs `claude` as a `claude.cmd` shim, which
+ * `spawn` cannot run without a shell -- and a shell would have to re-quote the schema and
+ * system prompt for cmd.exe. So there the CLI's own entry point is run with this Node.
+ */
+export function resolveClaudeCodeCommand(
+    platform: NodeJS.Platform = process.platform,
+    npmRoot: () => string = () => execSync('npm root -g', { encoding: 'utf-8' }).trim(),
+): { file: string; args: string[] } {
+    if (platform !== 'win32') return { file: 'claude', args: [] };
+    try {
+        const cli = path.join(npmRoot(), '@anthropic-ai', 'claude-code', 'cli.js');
+        if (fs.existsSync(cli)) return { file: process.execPath, args: [cli] };
+    } catch {
+        // No npm on PATH: fall through to a `claude` that may be a native install.
+    }
+    return { file: 'claude', args: [] };
+}
+
 /** Runs one structured request through `claude -p` in `workDir`. The prompt goes on stdin, so its size is not bounded by argv limits. */
 export function generateWithClaudeCode<T extends z.ZodTypeAny>(
     schema: T,
@@ -229,7 +250,8 @@ export function generateWithClaudeCode<T extends z.ZodTypeAny>(
     });
 
     return new Promise((resolve, reject) => {
-        const child = spawn(options.command ?? 'claude', args, {
+        const launch = options.command ? { file: options.command, args: [] } : resolveClaudeCodeCommand();
+        const child = spawn(launch.file, [...launch.args, ...args], {
             cwd: options.workDir,
             env: buildClaudeCodeEnv(process.env),
             stdio: ['pipe', 'pipe', 'pipe'],

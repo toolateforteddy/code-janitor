@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       provider:
-        description: 'AI Provider (google, anthropic, openai)'
+        description: 'AI Provider (google, anthropic, openai, claude-code)'
         type: string
         required: false
         default: 'google'
@@ -176,6 +176,8 @@ on:
         required: false
       OPENAI_API_KEY:
         required: false
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
 
 jobs:
   sweep:
@@ -231,3 +233,4 @@ jobs:
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

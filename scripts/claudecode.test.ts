@@ -11,6 +11,7 @@ import {
     parseClaudeCodeOutput,
     generateWithClaudeCode,
     readClaudeCodeUsage,
+    resolveClaudeCodeCommand,
 } from './claudecode.js';
 import { buildProposalPrompts, selectPrompt, isLoadedByClaudeCode, formatFilesToRead } from './ai.js';
 import { resolveMaxConcurrency, resolveTriageModel } from './config.js';
@@ -110,6 +111,21 @@ process.stdin.on('end', () => {
                 assert.equal(fs.realpathSync(out.files[0]), fs.realpathSync(dir));
             } finally {
                 fs.rmSync(dir, { recursive: true, force: true });
+            }
+        });
+
+        it('runs the CLI entry point with Node on Windows, where npm installs a .cmd shim', () => {
+            assert.deepEqual(resolveClaudeCodeCommand('linux', () => { throw new Error('unused'); }), { file: 'claude', args: [] });
+            const root = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-npmroot-'));
+            try {
+                const cli = path.join(root, '@anthropic-ai', 'claude-code', 'cli.js');
+                fs.mkdirSync(path.dirname(cli), { recursive: true });
+                fs.writeFileSync(cli, '');
+                assert.deepEqual(resolveClaudeCodeCommand('win32', () => root), { file: process.execPath, args: [cli] });
+                // Not installed through npm: leave it to whatever `claude` is on PATH.
+                assert.deepEqual(resolveClaudeCodeCommand('win32', () => path.join(root, 'none')), { file: 'claude', args: [] });
+            } finally {
+                fs.rmSync(root, { recursive: true, force: true });
             }
         });
 
