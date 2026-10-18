@@ -119,18 +119,46 @@ process.stdin.on('end', () => {
             }
         });
 
-        it('runs the CLI entry point with Node on Windows, where npm installs a .cmd shim', () => {
+        it('runs the npm package\'s own executable on Windows, where npm installs a .cmd shim', () => {
             assert.deepEqual(resolveClaudeCodeCommand('linux', () => { throw new Error('unused'); }), { file: 'claude', args: [] });
             const root = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-npmroot-'));
             try {
-                const cli = path.join(root, '@anthropic-ai', 'claude-code', 'cli.js');
-                fs.mkdirSync(path.dirname(cli), { recursive: true });
+                const pkg = path.join(root, '@anthropic-ai', 'claude-code');
+                fs.mkdirSync(path.join(pkg, 'bin'), { recursive: true });
+                // A version from before the native binary: cli.js, run with this Node.
+                const cli = path.join(pkg, 'cli.js');
                 fs.writeFileSync(cli, '');
-                assert.deepEqual(resolveClaudeCodeCommand('win32', () => root), { file: process.execPath, args: [cli] });
+                assert.deepEqual(resolveClaudeCodeCommand('win32', () => root, ''), { file: process.execPath, args: [cli] });
+                // Current versions ship bin/claude.exe and no cli.js.
+                const exe = path.join(pkg, 'bin', 'claude.exe');
+                fs.writeFileSync(exe, '');
+                fs.rmSync(cli);
+                assert.deepEqual(resolveClaudeCodeCommand('win32', () => root, ''), { file: exe, args: [] });
                 // Not installed through npm: leave it to whatever `claude` is on PATH.
-                assert.deepEqual(resolveClaudeCodeCommand('win32', () => path.join(root, 'none')), { file: 'claude', args: [] });
+                assert.deepEqual(resolveClaudeCodeCommand('win32', () => path.join(root, 'none'), ''), { file: 'claude', args: [] });
             } finally {
                 fs.rmSync(root, { recursive: true, force: true });
+            }
+        });
+
+        it('finds the package beside a claude.cmd on PATH from another npm prefix', () => {
+            const prefix = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-prefix-'));
+            try {
+                fs.writeFileSync(path.join(prefix, 'claude.cmd'), '');
+                const exe = path.join(prefix, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+                fs.mkdirSync(path.dirname(exe), { recursive: true });
+                fs.writeFileSync(exe, '');
+                const pathEnv = [path.join(prefix, 'elsewhere'), prefix].join(';');
+                assert.deepEqual(
+                    resolveClaudeCodeCommand('win32', () => path.join(prefix, 'setup-node-root'), pathEnv),
+                    { file: exe, args: [] },
+                );
+                assert.deepEqual(
+                    resolveClaudeCodeCommand('win32', () => { throw new Error('no npm'); }, pathEnv),
+                    { file: exe, args: [] },
+                );
+            } finally {
+                fs.rmSync(prefix, { recursive: true, force: true });
             }
         });
 
