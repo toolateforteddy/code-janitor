@@ -222,19 +222,38 @@ export interface ClaudeCodeOptions {
 /**
  * How to start the CLI. On Windows, npm installs `claude` as a `claude.cmd` shim, which
  * `spawn` cannot run without a shell -- and a shell would have to re-quote the schema and
- * system prompt for cmd.exe. So there the CLI's own entry point is run with this Node.
+ * system prompt for cmd.exe. So there the package's own executable is run directly: the
+ * native `bin/claude.exe` the package has shipped since it stopped being a Node script,
+ * or `cli.js` with this Node for a version from before that.
+ *
+ * The package is looked for under `npm root -g` and beside every `claude.cmd` on PATH,
+ * because the Node that runs the janitor is not necessarily the one that installed the
+ * CLI: on a self-hosted runner `claude` is often the machine owner's own install, under a
+ * different npm prefix from the Node that setup-node put first on PATH.
  */
 export function resolveClaudeCodeCommand(
     platform: NodeJS.Platform = process.platform,
     npmRoot: () => string = () => execSync('npm root -g', { encoding: 'utf-8' }).trim(),
+    pathEnv: string = process.env.PATH ?? '',
 ): { file: string; args: string[] } {
     if (platform !== 'win32') return { file: 'claude', args: [] };
+    const roots: string[] = [];
     try {
-        const cli = path.join(npmRoot(), '@anthropic-ai', 'claude-code', 'cli.js');
-        if (fs.existsSync(cli)) return { file: process.execPath, args: [cli] };
+        roots.push(npmRoot());
     } catch {
-        // No npm on PATH: fall through to a `claude` that may be a native install.
+        // No npm on PATH: the shims on PATH below may still lead to an install.
     }
+    for (const dir of pathEnv.split(';')) {
+        if (dir && fs.existsSync(path.join(dir, 'claude.cmd'))) roots.push(path.join(dir, 'node_modules'));
+    }
+    for (const root of roots) {
+        const pkg = path.join(root, '@anthropic-ai', 'claude-code');
+        const exe = path.join(pkg, 'bin', 'claude.exe');
+        if (fs.existsSync(exe)) return { file: exe, args: [] };
+        const cli = path.join(pkg, 'cli.js');
+        if (fs.existsSync(cli)) return { file: process.execPath, args: [cli] };
+    }
+    // Not installed through npm: a native install's claude.exe is found by spawn itself.
     return { file: 'claude', args: [] };
 }
 
