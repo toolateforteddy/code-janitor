@@ -162,6 +162,50 @@ process.stdin.on('end', () => {
             }
         });
 
+        it('ignores empty PATH entries and directories without a claude.cmd', () => {
+            const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-nocmd-'));
+            try {
+                // The package is there, but no claude.cmd marks the directory as an npm prefix.
+                const exe = path.join(dir, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+                fs.mkdirSync(path.dirname(exe), { recursive: true });
+                fs.writeFileSync(exe, '');
+                const pathEnv = [';', '', dir, path.join(dir, 'missing')].join(';');
+                assert.deepEqual(
+                    resolveClaudeCodeCommand('win32', () => { throw new Error('no npm'); }, pathEnv),
+                    { file: 'claude', args: [] },
+                );
+            } finally {
+                fs.rmSync(dir, { recursive: true, force: true });
+            }
+        });
+
+        it('prefers the npm root over a PATH shim, and the first root over a later one', () => {
+            const root = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-order-'));
+            try {
+                const npmRoot = path.join(root, 'npm-root');
+                const prefix = path.join(root, 'prefix');
+                const npmCli = path.join(npmRoot, '@anthropic-ai', 'claude-code', 'cli.js');
+                const shimExe = path.join(prefix, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+                fs.mkdirSync(path.dirname(npmCli), { recursive: true });
+                fs.mkdirSync(path.dirname(shimExe), { recursive: true });
+                fs.writeFileSync(npmCli, '');
+                fs.writeFileSync(shimExe, '');
+                fs.writeFileSync(path.join(prefix, 'claude.cmd'), '');
+                // The npm root only has cli.js, yet it still wins over the later root's claude.exe.
+                assert.deepEqual(
+                    resolveClaudeCodeCommand('win32', () => npmRoot, prefix),
+                    { file: process.execPath, args: [npmCli] },
+                );
+                // Without the npm root's package, the PATH shim's is used.
+                assert.deepEqual(
+                    resolveClaudeCodeCommand('win32', () => path.join(root, 'none'), prefix),
+                    { file: shimExe, args: [] },
+                );
+            } finally {
+                fs.rmSync(root, { recursive: true, force: true });
+            }
+        });
+
         it('says how to install the CLI when it is missing', async () => {
             await assert.rejects(
                 generateWithClaudeCode(schema, 'sys', 'p', {
