@@ -259,6 +259,15 @@ export const claudeCodeAgent = process.env.CLAUDE_CODE_AGENT !== 'false';
  */
 export const trustClaudeChecks = process.env.TRUST_CLAUDE_CHECKS === 'true';
 
+/**
+ * Turns a read-only claude-code request (triage, proposals) may take before its answer.
+ * Separate from `maxLlmToolSteps` because the claude-code proposal prompt lists the
+ * reviewed files by path instead of pasting them, so reading them is the request's job:
+ * eight picked files and their example tests do not fit in five turns, and unlike the
+ * AI SDK path there is no tool-less re-ask to fall back on when the budget runs out.
+ */
+export const claudeCodeMaxTurns = parseLineBudget(process.env.CLAUDE_CODE_MAX_TURNS, 20);
+
 /** Turns the implementing agent may take per pass: reads, edits and verify runs together. */
 export const claudeCodeAgentMaxTurns = parseLineBudget(process.env.CLAUDE_CODE_AGENT_MAX_TURNS, 40);
 
