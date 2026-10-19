@@ -151,6 +151,7 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 | `fallback_model` | Model ID for the backup provider. Empty uses that provider's default | `''` |
 | `triage_model` | Model for the triage request that picks which files of a large window to review. Empty means `haiku` on the `claude-code` provider and the main model otherwise | `''` |
 | `claude_code_agent` | On the `claude-code` provider, Claude Code implements each fix in its worktree and runs the checks itself. `false` goes back to returned edits | `true` |
+| `claude_code_max_turns` | Turns a read-only `claude-code` request (triage, proposals) may take, file reads included. Used instead of `max_llm_tool_steps` on that provider | `20` |
 | `claude_code_agent_max_turns` | Turns the implementing agent may take per pass; each fix gets at most two passes | `40` |
 | `trust_claude_checks` | Skip the janitor's own lint and test run when Claude Code's last check run passed on exactly the files being committed. Saves Actions runner minutes; see below | `false` |
 | `claude_code_oauth_token` | Claude subscription token from `claude setup-token`, used by the `claude-code` provider | `''` |
@@ -173,7 +174,7 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 | `draft_pr` | Open PRs in Draft state | `true` |
 | `janitor_mode` | Execution mode (`auto`, `repair-only`, `refactor-only`) | `'auto'` |
 | `enable_llm_tools` | Allow LLM to call workspace tools (`read_file`, `list_directory`, `run_command`) | `true` |
-| `max_llm_tool_steps` | Maximum tool call steps per LLM request | `5` |
+| `max_llm_tool_steps` | Maximum tool call steps per LLM request. The `claude-code` provider uses `claude_code_max_turns` instead | `5` |
 | `llm_max_retries` | Retries after a transient LLM API failure (429, 5xx, dropped connection, unparseable response). An exhausted token/credit allowance is never retried — it fails over to the backup model instead. `0` disables retrying | `4` |
 | `llm_retry_base_delay_ms` | Base delay in ms for exponential backoff between LLM retries | `1000` |
 | `llm_retry_max_delay_ms` | Maximum delay in ms between LLM retries | `30000` |
@@ -302,7 +303,7 @@ When `enable_llm_tools` is set to `true` (default), the LLM can dynamically insp
 - `run_command`: Executes small, safe, read-only diagnostic commands (`ls`, `dir`, `find`, `git status`, `git log`, `git diff`, `git ls-files`, `cat`, `grep`, `pwd`, `tree`, `head`, `tail`).
 
 ### Step Budget Exhaustion
-The tool loop is bounded by `max_llm_tool_steps`. If the model spends every step on tool calls and never returns its structured answer, the run does **not** fail: the janitor re-asks once with tools disabled, replaying the tool calls and their output in the prompt, so the sweep still produces proposals.
+The tool loop is bounded by `max_llm_tool_steps`. If the model spends every step on tool calls and never returns its structured answer, the run does **not** fail: the janitor re-asks once with tools disabled, replaying the tool calls and their output in the prompt, so the sweep still produces proposals. This applies to the AI SDK providers; `claude-code` has its own budget, `claude_code_max_turns` (see below).
 
 ### Tool Logging & Visibility
 All tool invocations are logged directly to standard output during execution (e.g., `🛠️ Tool call: read_file("src/utils.ts") -> Read 1452 chars`), giving full visibility in GitHub Action logs into what data the model accessed.
@@ -363,7 +364,7 @@ The `claude-code` provider bills a Claude Pro or Max plan instead of an API key.
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
 ```
 
-The action installs the CLI when either `provider` or `fallback_provider` is `claude-code`. Triage and proposal requests inspect the workspace with Claude Code's own read-only tools (`Read`, `Grep`, `Glob`), bounded by `max_llm_tool_steps`. Only the implementing step below can edit files, and only inside a fix's worktree. A spent plan (`You've hit your limit`) counts as out of tokens, so a configured fallback takes over for the rest of the run.
+The action installs the CLI when either `provider` or `fallback_provider` is `claude-code`. Triage and proposal requests inspect the workspace with Claude Code's own read-only tools (`Read`, `Grep`, `Glob`), bounded by `claude_code_max_turns`. That budget is larger than `max_llm_tool_steps` because the claude-code proposal prompt lists the files under review by path rather than pasting them, so the request spends turns reading them, and a request that runs out of turns has no tool-less re-ask to fall back on: it fails. Only the implementing step below can edit files, and only inside a fix's worktree. A spent plan (`You've hit your limit`) counts as out of tokens, so a configured fallback takes over for the rest of the run.
 
 **Claude Code writes the fixes itself.** With the other providers the model returns each fix as search/replace edits inside its JSON answer; the janitor applies them, runs the checks, and on a failure asks for corrected edits once. On `claude-code` the work is split differently:
 

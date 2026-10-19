@@ -162,6 +162,10 @@ inputs:
     description: 'On the claude-code provider, have Claude Code implement each fix in its worktree (editing files and running the lint/test commands itself) instead of returning edits for the janitor to apply. The janitor still checks integrity, line budgets, lint and tests itself before opening a PR. Set false to go back to returned edits.'
     required: false
     default: 'true'
+  claude_code_max_turns:
+    description: 'Turns a read-only claude-code request (triage, proposals) may take, file reads included. On claude-code these requests read the files under review themselves rather than having them pasted, so this replaces max_llm_tool_steps for them.'
+    required: false
+    default: '20'
   claude_code_agent_max_turns:
     description: 'Turns the implementing agent may take per pass (reads, edits and check runs together). Each fix gets at most two passes.'
     required: false
@@ -307,6 +311,7 @@ runs:
         FALLBACK_AI_MODEL: ${{ inputs.fallback_model }}
         TRIAGE_MODEL: ${{ inputs.triage_model }}
         CLAUDE_CODE_AGENT: ${{ inputs.claude_code_agent }}
+        CLAUDE_CODE_MAX_TURNS: ${{ inputs.claude_code_max_turns }}
         CLAUDE_CODE_AGENT_MAX_TURNS: ${{ inputs.claude_code_agent_max_turns }}
         TRUST_CLAUDE_CHECKS: ${{ inputs.trust_claude_checks }}
         TEST_CMD: ${{ inputs.test_command }}

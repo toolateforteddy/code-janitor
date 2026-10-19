@@ -20,6 +20,7 @@ import {
     ensureTrailingNewline,
     enableLlmTools,
     maxLlmToolSteps,
+    claudeCodeMaxTurns,
     preferEdits,
     isEditBasedChange,
     llmMaxRetries,
@@ -398,7 +399,7 @@ async function generateStructuredWithTools<T extends z.ZodTypeAny>(
                 model: choice.model,
                 workDir,
                 allowTools: Boolean(tools),
-                maxTurns: maxLlmToolSteps,
+                maxTurns: claudeCodeMaxTurns,
                 onUsage: recordClaudeCodeUsage,
             }), retryOptions);
         }
