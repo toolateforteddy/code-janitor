@@ -13,6 +13,9 @@ import {
     parseLineBudget,
     describeModel,
     parseAssignees,
+    claudeCodeMaxTurns,
+    claudeCodeAgentMaxTurns,
+    maxLlmToolSteps,
 } from './config.js';
 
 describe('config module test suite', () => {
@@ -219,6 +222,25 @@ describe('config module test suite', () => {
             assert.equal(parseNonNegativeInt('', 4), 4);
             assert.equal(parseNonNegativeInt('lots', 4), 4);
             assert.equal(parseNonNegativeInt('-1', 4), 4);
+        });
+    });
+
+    describe('claude-code turn budgets', () => {
+        it('are positive integers', () => {
+            assert.ok(Number.isInteger(claudeCodeMaxTurns) && claudeCodeMaxTurns > 0);
+            assert.ok(Number.isInteger(claudeCodeAgentMaxTurns) && claudeCodeAgentMaxTurns > 0);
+        });
+
+        it('gives the read-only request at least as many turns as the SDK tool path', () => {
+            assert.ok(claudeCodeMaxTurns >= maxLlmToolSteps);
+        });
+
+        it('defaults claudeCodeMaxTurns to 20 when not overridden', (t) => {
+            if (process.env.CLAUDE_CODE_MAX_TURNS !== undefined) {
+                t.skip('CLAUDE_CODE_MAX_TURNS is set');
+                return;
+            }
+            assert.equal(claudeCodeMaxTurns, 20);
         });
     });
 
