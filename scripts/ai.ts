@@ -41,7 +41,7 @@ import { runVerification, logFailedDiff, runCmd } from './git.js';
 import { withLlmRetry } from './retry.js';
 import { ModelFallback, resolveFallbackChoice } from './fallback.js';
 import { recordNote, getSummary, recordClaudeCodeUsage } from './summary.js';
-import { CLAUDE_CODE_PROVIDER, generateWithClaudeCode } from './claudecode.js';
+import { CLAUDE_CODE_PROVIDER, generateWithClaudeCode, isClaudeCodeTurnLimitError, nextClaudeCodeTurnBudget } from './claudecode.js';
 import { isTestFilePath } from './paths.js';
 
 const EDIT_FORMAT_RULE = `CHANGE FORMAT (PREFER TARGETED EDITS): For an EXISTING file, express the change as an 'edits' array of search/replace pairs: 'oldText' is a snippet copied VERBATIM from the current file content (exact indentation, enough surrounding lines to be unique in that file) and 'newText' is what replaces it. Use an empty 'newText' to delete the snippet, and set 'replaceAll' only when every occurrence should change. Do NOT echo the whole file back. For a NEW file, omit 'edits' and put the complete file body in 'updatedContent'. If you do fall back to 'updatedContent' for an existing file, it MUST be the COMPLETE file from line 1 to the end -- never abbreviate or summarize unedited code with '// ...' and never drop existing top-level functions, structs, classes, imports, macros, or types.`;
@@ -395,13 +395,29 @@ async function generateStructuredWithTools<T extends z.ZodTypeAny>(
         if (choice.provider === CLAUDE_CODE_PROVIDER) {
             // Claude Code inspects the workspace with its own read-only tools, so the
             // janitor's tool set only decides whether inspection is allowed at all.
-            return withLlmRetry(() => generateWithClaudeCode(schema, system, prompt, {
-                model: choice.model,
-                workDir,
-                allowTools: Boolean(tools),
-                maxTurns: claudeCodeMaxTurns,
-                onUsage: recordClaudeCodeUsage,
-            }), retryOptions);
+            let maxTurns = claudeCodeMaxTurns;
+            return withLlmRetry(async () => {
+                try {
+                    return await generateWithClaudeCode(schema, system, prompt, {
+                        model: choice.model,
+                        workDir,
+                        allowTools: Boolean(tools),
+                        maxTurns,
+                        onUsage: recordClaudeCodeUsage,
+                    });
+                } catch (err) {
+                    // There is no tool-less re-ask on this path, so a retry that ran out of
+                    // turns gets more of them rather than the same budget again.
+                    if (isClaudeCodeTurnLimitError(err)) {
+                        const next = nextClaudeCodeTurnBudget(maxTurns, claudeCodeMaxTurns);
+                        if (next > maxTurns) {
+                            console.warn(`⚠️ Claude Code used all ${maxTurns} turn(s) without answering; the next attempt gets ${next}.`);
+                            maxTurns = next;
+                        }
+                    }
+                    throw err;
+                }
+            }, retryOptions);
         }
 
         if (tools) {
