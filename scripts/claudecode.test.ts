@@ -74,6 +74,14 @@ describe('claudecode', () => {
             assert.equal(nextClaudeCodeTurnBudget(30, 20), 60);
             assert.equal(nextClaudeCodeTurnBudget(60, 20), 80);
         });
+
+        it('handles edge cases without ever lowering the budget', () => {
+            assert.equal(nextClaudeCodeTurnBudget(100, 20), 100);
+            assert.equal(nextClaudeCodeTurnBudget(1, 1), 2);
+            assert.equal(nextClaudeCodeTurnBudget(2, 1), 4);
+            assert.equal(nextClaudeCodeTurnBudget(4, 1), 4);
+            assert.equal(nextClaudeCodeTurnBudget(0, 20), 0);
+        });
     });
 
     describe('parseClaudeCodeOutput()', () => {
