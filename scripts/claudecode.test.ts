@@ -12,6 +12,8 @@ import {
     generateWithClaudeCode,
     readClaudeCodeUsage,
     resolveClaudeCodeCommand,
+    isClaudeCodeTurnLimitError,
+    nextClaudeCodeTurnBudget,
 } from './claudecode.js';
 import { buildProposalPrompts, selectPrompt, isLoadedByClaudeCode, formatFilesToRead } from './ai.js';
 import { resolveMaxConcurrency, resolveTriageModel } from './config.js';
@@ -64,6 +66,16 @@ describe('claudecode', () => {
         });
     });
 
+    describe('nextClaudeCodeTurnBudget()', () => {
+        it('doubles the budget up to four times the configured one', () => {
+            assert.equal(nextClaudeCodeTurnBudget(20, 20), 40);
+            assert.equal(nextClaudeCodeTurnBudget(40, 20), 80);
+            assert.equal(nextClaudeCodeTurnBudget(80, 20), 80);
+            assert.equal(nextClaudeCodeTurnBudget(30, 20), 60);
+            assert.equal(nextClaudeCodeTurnBudget(60, 20), 80);
+        });
+    });
+
     describe('parseClaudeCodeOutput()', () => {
         it('returns the validated structured output', () => {
             const out = parseClaudeCodeOutput(schema, result({ structured_output: { files: ['a.ts'], reason: 'hi' } }));
@@ -83,6 +95,14 @@ describe('claudecode', () => {
                     return true;
                 });
             }
+        });
+
+        it('marks only a turn-limit stop as one', () => {
+            const caught = (stdout: string) => { try { parseClaudeCodeOutput(schema, stdout); } catch (err) { return err; } };
+            assert.ok(isClaudeCodeTurnLimitError(caught(result({ subtype: 'error_max_turns', is_error: true }))));
+            assert.ok(!isClaudeCodeTurnLimitError(caught(result({ subtype: 'error_max_structured_output_retries', is_error: true }))));
+            assert.ok(!isClaudeCodeTurnLimitError(caught(result({}))));
+            assert.ok(!isClaudeCodeTurnLimitError(new Error('Claude Code stopped without a structured answer (error_max_turns)')));
         });
 
         it('reports a spent subscription as out of quota, so the fallback takes over', () => {

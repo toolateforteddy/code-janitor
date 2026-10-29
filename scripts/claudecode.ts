@@ -170,6 +170,23 @@ export function readClaudeCodeUsage(stdout: string): ClaudeCodeUsage | null {
     };
 }
 
+const turnLimitErrors = new WeakSet<object>();
+
+/** True for a request that ran out of `--max-turns` before answering, as opposed to one that answered badly. */
+export function isClaudeCodeTurnLimitError(err: unknown): boolean {
+    return typeof err === 'object' && err !== null && turnLimitErrors.has(err);
+}
+
+/**
+ * The turn budget for the next attempt after one ran out of turns: double the last,
+ * capped at four times the configured budget. Re-asking with the same budget repeats
+ * the same exploration and runs out at the same place, so a retry has to be allowed
+ * further than the attempt it replaces. Returns `current` once the cap is reached.
+ */
+export function nextClaudeCodeTurnBudget(current: number, configured: number): number {
+    return Math.max(current, Math.min(current * 2, configured * 4));
+}
+
 /**
  * Turns the CLI's `--output-format json` result into the schema-typed object.
  *
@@ -190,7 +207,9 @@ export function parseClaudeCodeOutput<T extends z.ZodTypeAny>(schema: T, stdout:
     }
 
     if (parsed.subtype === 'error_max_turns' || parsed.subtype === 'error_max_structured_output_retries') {
-        throw new NoOutputGeneratedError({ message: `Claude Code stopped without a structured answer (${parsed.subtype})` });
+        const err = new NoOutputGeneratedError({ message: `Claude Code stopped without a structured answer (${parsed.subtype})` });
+        if (parsed.subtype === 'error_max_turns') turnLimitErrors.add(err);
+        throw err;
     }
     if (parsed.is_error || (parsed.subtype && parsed.subtype !== 'success')) {
         throw new Error(`Claude Code request failed (${parsed.subtype ?? 'error'}): ${parsed.result ?? 'no message'}`);
