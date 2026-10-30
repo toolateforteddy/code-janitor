@@ -157,6 +157,56 @@ export const JANITOR_AUTHOR_EMAIL = 'bot@codejanitor.local';
  */
 export const JANITOR_TRAILER = 'Code-Janitor';
 
+/** What a janitor commit or PR is: the trailer's value, and the kind of PR it opens. */
+export type JanitorPRKind = 'repair' | 'refactor' | 'architecture-docs';
+
+/**
+ * `janitor_mode` value that skips the code sweep, so a run only refreshes the repo maps
+ * listed in `architecture_docs` (see archdocs.ts). Setting `architecture_docs` is what
+ * turns the refresh on; this only keeps a run from doing anything else.
+ */
+export const DOCS_ONLY_MODE = 'docs-only';
+
+/**
+ * Whether this run sweeps code. The action decides (no new commits since the cursor
+ * means no sweep, but the docs refresh may still run) and says so in JANITOR_SWEEP;
+ * a run started any other way sweeps.
+ */
+export const sweepEnabled = process.env.JANITOR_SWEEP !== 'false';
+
+/** Branch prefix of an architecture-docs PR; kept apart from code-fix PRs, which dedupe against each other. */
+export const ARCHITECTURE_DOCS_BRANCH_PREFIX = `${JANITOR_BRANCH_PREFIX}architecture-docs-`;
+
+/** Line in an architecture-docs PR body naming the commit it brought the docs up to. */
+export const ARCHITECTURE_DOCS_HEAD_TRAILER = 'Architecture-Docs-Head';
+
+/** Line in an architecture-docs PR body for each listed doc it wrote from scratch. */
+export const ARCHITECTURE_DOCS_CREATED_TRAILER = 'Architecture-Docs-Created';
+
+/**
+ * Normalizes ARCHITECTURE_DOCS into repo-relative Markdown paths. These are the only
+ * files the architecture-docs refresh may change, so anything that could reach further is
+ * refused rather than tidied: absolute paths, `..`, globs, and non-Markdown files.
+ */
+export function parseArchitectureDocs(raw: string | undefined): { docs: string[]; rejected: string[] } {
+    const docs: string[] = [];
+    const rejected: string[] = [];
+    for (const entry of (raw || '').split(/[,\n]/)) {
+        const trimmed = entry.trim();
+        if (!trimmed) continue;
+        const clean = trimmed.replace(/\\/g, '/').replace(/^\.\//, '');
+        const unsafe = clean.startsWith('/') || /^[A-Za-z]:/.test(clean) || clean.split('/').includes('..') || /[*?[\]{}]/.test(clean);
+        if (unsafe || !/\.(md|mdx|markdown)$/i.test(clean)) {
+            rejected.push(trimmed);
+            continue;
+        }
+        if (!docs.includes(clean)) docs.push(clean);
+    }
+    return { docs, rejected };
+}
+
+export const { docs: architectureDocs, rejected: rejectedArchitectureDocs } = parseArchitectureDocs(process.env.ARCHITECTURE_DOCS);
+
 export interface JanitorState {
     lastAnalyzedCommit: string;
     lastRunTimestamp: string;

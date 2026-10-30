@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import { ClaudeCodeUsage, addClaudeCodeUsage, emptyClaudeCodeUsage } from './claudecode.js';
+import type { JanitorPRKind } from './config.js';
 
 /** What ultimately happened to a single proposed fix. */
 export type FixOutcome = 'pr-created' | 'verification-failed' | 'no-changes' | 'error';
@@ -7,7 +8,7 @@ export type FixOutcome = 'pr-created' | 'verification-failed' | 'no-changes' | '
 export interface FixResult {
     slug: string;
     title: string;
-    modeType: 'repair' | 'refactor';
+    modeType: JanitorPRKind;
     outcome: FixOutcome;
     /** Short human-readable reason, e.g. the failed verification step. */
     detail?: string;
@@ -15,7 +16,7 @@ export interface FixResult {
 }
 
 export type BranchHealth = 'green' | 'broken' | 'unknown';
-export type Sweep = 'repair' | 'refactor' | 'none';
+export type Sweep = 'repair' | 'refactor' | 'architecture-docs' | 'none';
 
 export interface RunSummary {
     provider: string;
@@ -110,6 +111,7 @@ const HEALTH_LABELS: Record<BranchHealth, string> = {
 const SWEEP_LABELS: Record<Sweep, string> = {
     repair: '🚨 Repair',
     refactor: '🧹 Refactor',
+    'architecture-docs': '📚 Architecture docs',
     none: '— None',
 };
 

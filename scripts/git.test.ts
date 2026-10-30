@@ -242,6 +242,10 @@ describe('git module test suite', () => {
             assert.equal(isJanitorCommit('me@example.com', 'Fix (#3)\n\ncode-janitor: repair'), true);
         });
 
+        it('recognizes a merged architecture-docs PR by its trailer', () => {
+            assert.equal(isJanitorCommit('me@example.com', '📚 Refresh architecture docs (#9)\n\nCode-Janitor: architecture-docs'), true);
+        });
+
         it('handles non-string or falsy input gracefully', () => {
             assert.equal(isJanitorCommit(undefined as any, 'refactor: x'), false);
             assert.equal(isJanitorCommit('bot@codejanitor.local', undefined as any), true);

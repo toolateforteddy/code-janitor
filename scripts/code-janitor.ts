@@ -1,3 +1,4 @@
+import { execFileSync } from 'child_process';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import {
@@ -11,7 +12,11 @@ import {
     excludePathsStr,
     dedupePRs,
     triageThresholdChars,
+    architectureDocs,
+    DOCS_ONLY_MODE,
+    sweepEnabled,
 } from './config.js';
+import { runArchitectureDocs } from './archdocs.js';
 import {
     runVerification,
     getDefaultBranch,
@@ -63,7 +68,61 @@ export async function main() {
     }
 }
 
+/**
+ * One run: the code sweep, when there is new work and the mode allows it, then the
+ * architecture-docs refresh, whenever `architecture_docs` is set. The refresh does not
+ * depend on the sweep: it runs on a red main, on a night with nothing new to sweep, and
+ * after a sweep that failed.
+ */
 async function runJanitor() {
+    const docsOnly = mode === DOCS_ONLY_MODE;
+    const refreshDocs = docsOnly || architectureDocs.length > 0;
+    const startHead = currentHead();
+
+    let sweepError: unknown = null;
+    if (docsOnly) {
+        console.log(`📚 janitor_mode is '${DOCS_ONLY_MODE}': no code sweep this run.`);
+    } else if (!sweepEnabled) {
+        console.log('🧹 Nothing new since the last sweep; only the architecture docs are checked this run.');
+        recordNote('No new commits since the last sweep; code sweep skipped.');
+    } else {
+        try {
+            await runSweep();
+        } catch (err) {
+            sweepError = err;
+        }
+    }
+
+    if (refreshDocs) {
+        try {
+            returnToHead(startHead);
+            await runArchitectureDocs(architectureDocs, process.cwd(), startHead);
+        } catch (err) {
+            if (sweepError) recordNote(`Code sweep failed: ${sweepError instanceof Error ? sweepError.message : String(sweepError)}`);
+            throw err;
+        }
+    }
+    if (sweepError) throw sweepError;
+}
+
+function currentHead(): string {
+    try {
+        return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    } catch {
+        return '';
+    }
+}
+
+/**
+ * Puts the checkout back on the commit the run started from. Only the sequential fallback
+ * (no worktree support) leaves it elsewhere, on the branch of the last PR it opened.
+ */
+function returnToHead(head: string): void {
+    if (!head || currentHead() === head) return;
+    execFileSync('git', ['checkout', '-q', '--detach', head], { stdio: ['pipe', 'pipe', 'pipe'] });
+}
+
+async function runSweep() {
     const summary = getSummary();
 
     const defaultBranch = getDefaultBranch();

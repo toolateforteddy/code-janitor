@@ -18,6 +18,7 @@
 - 🧪 **Convention-Aware Test Generation:** Before writing tests, Janitor feeds the existing sibling test files for each changed source file into the model's context (counterpart tests first, then same-directory tests, mirrored JVM `src/test` roots, and finally any test file in the repo). Generated tests reuse the project's real test framework, imports, and helpers instead of inventing ones that fail to compile.
 - 🎯 **Atomic PRs:** Splits refactors and fixes into tiny, single-responsibility PRs (<100 lines) so reviews take 30 seconds.
 - 🛡️ **Zero Broken PR Guarantee:** Runs your native linters and test commands (`go test`, `cargo test`, `npm test`, `pytest`, `./gradlew test`) locally inside the runner. If a change breaks compilation or a test, **it is automatically discarded before a PR is opened**.
+- 📚 **Architecture Docs Refresh (opt-in):** Set `architecture_docs` and the janitor keeps the short repo maps an agent reads before the code accurate. It reads what changed since each listed doc was last updated, fixes only what drifted (or writes a listed doc that does not exist yet), checks every path, name and command against the tree without running anything, and opens one small draft PR that names the commit behind each change. It edits nothing but the listed docs.
 - 📊 **Job Summary for Every Run:** Each run publishes a GitHub Actions job summary (`$GITHUB_STEP_SUMMARY`) — sweep type, branch health, proposal counts, and the outcome of every proposed fix with a link to the PR it opened — so you can see what a nightly sweep did without opening the logs.
 - 🔄 **Provider Fallback When Tokens Run Out:** Configure a backup provider and Janitor keeps going when the primary's token/credit allowance is spent — run Claude first, fail over to Gemini for the rest of the run. Exhausted-quota errors are told apart from ordinary rate limits, so a real 429 is still retried with backoff instead of burning the fallback.
 - 💸 **Near-Zero Running Cost ($0–$0.05/mo):** Powered by fast, affordable models like **Gemini 3.6 Flash**. Includes early exit logic if no recent code changes exist.
@@ -172,7 +173,8 @@ Without these settings, `GITHUB_TOKEN` will be restricted to read-only access an
 | `reviewers` | Comma-separated GitHub handles or teams to request review | `''` |
 | `assignees` | Comma-separated GitHub usernames to assign each PR to (`@me` for the token owner). Reviewers alone do not put a PR in someone's "assigned to me" queue or the GitHub mobile app; assignees do. Teams cannot be assigned. | `''` |
 | `draft_pr` | Open PRs in Draft state | `true` |
-| `janitor_mode` | Execution mode (`auto`, `repair-only`, `refactor-only`) | `'auto'` |
+| `janitor_mode` | Execution mode (`auto`, `repair-only`, `refactor-only`, `docs-only`). `docs-only` skips the code sweep and only runs the architecture-docs refresh | `'auto'` |
+| `architecture_docs` | Comma-separated repo-relative Markdown files to keep in step with the code. Setting it turns the refresh on: every run also refreshes these files, in a PR of its own, and may change nothing else. See [Keeping Architecture Docs Accurate](#-keeping-architecture-docs-accurate) | `''` |
 | `enable_llm_tools` | Allow LLM to call workspace tools (`read_file`, `list_directory`, `run_command`) | `true` |
 | `max_llm_tool_steps` | Maximum tool call steps per LLM request. The `claude-code` provider uses `claude_code_max_turns` instead | `5` |
 | `llm_max_retries` | Retries after a transient LLM API failure (429, 5xx, dropped connection, unparseable response). An exhausted token/credit allowance is never retried — it fails over to the backup model instead. `0` disables retrying | `4` |
@@ -384,6 +386,98 @@ If the plan's allowance runs out mid-run and a `fallback_provider` takes over, f
 - **Usage in the job summary.** Each run's summary has a *Claude Code usage* row: requests, turns, input (and how much was cached) and output tokens, plus what that would have cost at API prices, as a gauge of how much of the plan a sweep takes.
 
 **Keep it to your own repositories.** Anthropic's terms allow a subscription token to drive Claude Code for your own ordinary use, which a scheduled sweep of your own repos is. They do not allow sharing one person's subscription across other people's repositories or offering it as a service; use an API key (`provider: 'anthropic'`) for that. Runs draw on the same usage limits as your interactive Claude use.
+
+---
+
+## 📚 Keeping Architecture Docs Accurate
+
+Some repositories keep short maps that tell an agent what is where without reading all the code: a `docs/repo-architecture.md` listing each directory, its entry points and what is generated, say, linked from `CLAUDE.md` or `AGENTS.md`. They rot quietly as directories, modules, entry points and generated files change. The architecture-docs refresh keeps them accurate.
+
+**Setting `architecture_docs` turns it on.** Every run of the action then also refreshes the listed files, after the code sweep and independently of it, in a pull request of its own. Leave it empty (the default) and nothing changes.
+
+### Inputs
+
+| Input | What it does in the refresh |
+| :--- | :--- |
+| `architecture_docs` | Comma-separated repo-relative Markdown files to keep in step with the code. Setting it turns the refresh on: every run also refreshes these files, in a PR of its own, and may change nothing else. See [Keeping Architecture Docs Accurate](#-keeping-architecture-docs-accurate) | `''` |
+| `janitor_mode: 'docs-only'` | Skips the code sweep, so a run only refreshes the docs. For a separate docs workflow (below). Needs `architecture_docs`. |
+| `provider`, `model`, `fallback_provider`, `fallback_model`, `enable_llm_tools` | As for the sweep. The model reads the code with read-only tools only. |
+| `claude_code_max_turns` | Turns per doc on `claude-code`. Writing a new doc gets twice as many. |
+| `max_line_diff`, `enforce_line_budget` | Cap on changed lines across the refreshed docs per PR. Not applied to a doc written from scratch. |
+| `draft_pr`, `assignees`, `reviewers` | As for the sweep's PRs. |
+
+`target_path`, `exclude_paths`, `lint_command`, `test_command`, `max_prs_per_run` and `dedupe_prs` do not apply to the refresh: a repo map describes the whole repository, nothing it changes is code, and it opens at most one PR.
+
+### Turning it on
+
+Either add `architecture_docs` to the workflow you already have:
+
+```yaml
+      - uses: toolateforteddy/code-janitor@main
+        with:
+          # ...your existing sweep settings...
+          architecture_docs: 'docs/repo-architecture.md, docs/code-architecture.md'
+```
+
+or give the docs a workflow and schedule of their own with `janitor_mode: 'docs-only'`:
+
+```yaml
+name: Code Janitor Architecture Docs
+
+on:
+  schedule:
+    - cron: '0 5 * * 1'   # Mondays
+  workflow_dispatch:
+
+# Share the sweep's group so the two never run at once.
+concurrency:
+  group: code-janitor
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # the refresh reads each doc's history
+      - uses: toolateforteddy/code-janitor@main
+        with:
+          janitor_mode: 'docs-only'
+          architecture_docs: 'docs/repo-architecture.md, docs/code-architecture.md'
+          provider: 'claude-code'
+          model: 'sonnet'
+          assignees: 'your-handle'
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+```
+
+Either way the checkout needs `fetch-depth: 0`: with a shallow one there is no history to measure drift from.
+
+**Which to choose.** In the nightly workflow the refresh runs every night, whether or not the sweep had anything to do, even on a red `main`. That is the least setup. A run makes one model request per doc whenever commits have landed since the doc was last updated, even when nothing in them drifted, so in a busy repository on a costly model that is a request per doc per night. A weekly `docs-only` workflow batches a week of drift into one PR for about a seventh of the requests. Either way, while a docs PR is open, runs make no requests at all.
+
+### What a refresh does
+
+1. **Checks for an open docs PR.** While one is open, the refresh does nothing: that PR still covers the same drift. If the latest docs PR was closed without merging, the next window starts after the commit it covered (`Architecture-Docs-Head:` in its body), so rejected drift is not proposed again.
+2. **Measures each doc's window.** For each listed doc, the commits since the last commit that changed it (`git log -1 -- <doc>`), excluding commits that only touched the listed docs, with the files each added, deleted, renamed or modified. No commits: no model request. The sweep's cursor is not read or moved.
+3. **Asks for the drift, one doc at a time.** The model sees the doc and the commit list, may read the code with read-only tools (`Read`, `Grep`, `Glob` on `claude-code`; `read_file`, `list_directory` and the read-only `run_command` elsewhere), and answers with search/replace edits. It is told to fix only what the commits made wrong (new or removed directories and modules, moved responsibilities, renamed entry points, generated files and their commands), to keep the doc's structure and voice, and to make no style rewrites. Each edit names the commits that caused it and every path, name and command it states.
+4. **Keeps only what checks out.** An edit is dropped whole, and listed in the PR as left out, when:
+   - it cites no commit from the window;
+   - anything it adds cannot be found: a path that is not tracked (globs and `<placeholder>` segments match any name, and a path may be the tail of a longer one, as maps name `fight/turn.rs` under a `rust/engine/src/` heading), a name or expression whose identifiers do not appear in any non-Markdown tracked file, a link that does not resolve from the doc's directory, or a command whose `cd` targets, repository scripts, path arguments, Cargo packages (`-p`), npm scripts and make targets do not exist, or whose program is neither a common toolchain command nor named in the code;
+   - its `oldText` is not in the doc, or it would take the docs past `max_line_diff` changed lines.
+
+   Markdown is never evidence: a name that only appears in a doc has not been shown to exist in the code. **Commands are never run**, only checked: a map can name a deploy script as easily as a test, and a model's answer is not a reason to run either.
+5. **Opens one PR, or none.** Nothing drifted and nothing was written: no PR. Otherwise one PR (draft per `draft_pr`) on a `janitor/architecture-docs-<timestamp>` branch, separate from code-fix PRs and left out of their deduplication. Its body lists each change with the commit that caused it, and what was left out and why. The janitor writes the files itself, the listed ones only, and refuses to open the PR if anything else in the worktree changed.
+
+### Bootstrapping a doc that does not exist yet
+
+List a path that is not there yet and the next run writes it, which is how a repository gets its first maps. The model is shown the tracked directories two levels deep and any listed maps that already exist (to match their voice and stay off their ground), reads the code with the same read-only tools and twice the `claude_code_max_turns`, and returns the whole doc. It is then checked a paragraph, list item and table row at a time with the same rules as an edit; a unit with anything that cannot be found is left out, as is a failing line of a shell fence, and the PR lists what was left out. A doc with nothing left but headings is not created. If a PR that wrote a doc is closed without merging (`Architecture-Docs-Created:` in its body), the doc is not written again on later runs; write it by hand, or reopen that PR.
+
+### Only the listed files
+
+The refresh can change the listed docs and nothing else, whatever `exclude_paths` allows: the model has no write tools, and the janitor applies its edits to those paths alone. Other docs, which hold design decisions somebody made, are read as context at most. The code sweep in the same run is unaffected and keeps its own scope.
 
 ---
 
