@@ -11,7 +11,10 @@ import {
     excludePathsStr,
     dedupePRs,
     triageThresholdChars,
+    architectureDocs,
+    ARCHITECTURE_DOCS_MODE,
 } from './config.js';
+import { runArchitectureDocs } from './archdocs.js';
 import {
     runVerification,
     getDefaultBranch,
@@ -65,6 +68,18 @@ export async function main() {
 
 async function runJanitor() {
     const summary = getSummary();
+
+    // Refreshing the repo maps is a run of its own, on its own schedule: it reads the
+    // docs' history rather than the sweep cursor, needs no green build, and may change
+    // nothing but the listed docs.
+    if (mode === ARCHITECTURE_DOCS_MODE) {
+        await runArchitectureDocs();
+        return;
+    }
+    if (architectureDocs.length > 0) {
+        console.log(`📚 architecture_docs is set but janitor_mode is '${mode}'; the docs are refreshed only by a run with janitor_mode '${ARCHITECTURE_DOCS_MODE}'.`);
+        recordNote(`architecture_docs is set, but it is read only when janitor_mode is '${ARCHITECTURE_DOCS_MODE}'.`);
+    }
 
     const defaultBranch = getDefaultBranch();
 

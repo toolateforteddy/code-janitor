@@ -366,7 +366,7 @@ interface StructuredRequestOptions {
     primaryModelOverride?: string;
 }
 
-async function generateStructuredWithTools<T extends z.ZodTypeAny>(
+export async function generateStructuredWithTools<T extends z.ZodTypeAny>(
     schema: T,
     system: string,
     promptVariants: string | PromptVariants,

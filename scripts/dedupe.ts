@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { FixProposal, proposalFilePaths, JANITOR_BRANCH_PREFIX } from './config.js';
+import { FixProposal, proposalFilePaths, JANITOR_BRANCH_PREFIX, ARCHITECTURE_DOCS_BRANCH_PREFIX } from './config.js';
 
 /**
  * A previously-opened Code Janitor pull request, used to suppress re-proposing a fix
@@ -105,6 +105,8 @@ export function fetchExistingJanitorPRs(cwd: string = process.cwd(), limit: numb
         for (const pr of parsed) {
             const headRefName = pr.headRefName || '';
             if (!headRefName.startsWith(JANITOR_BRANCH_PREFIX)) continue;
+            // Architecture-docs PRs touch only the repo maps, which no code fix proposes.
+            if (headRefName.startsWith(ARCHITECTURE_DOCS_BRANCH_PREFIX)) continue;
             // A merged PR's change already landed; if it didn't hold, re-proposing is legitimate.
             if (state === 'closed' && pr.mergedAt) continue;
 

@@ -153,7 +153,7 @@ export function getUncachedBaseCommit(currentHead: string, cwd?: string): string
 }
 
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const JANITOR_TRAILER_PATTERN = new RegExp(`^\\s*${escapeRegExp(JANITOR_TRAILER)}: (refactor|repair)\\s*$`, 'im');
+const JANITOR_TRAILER_PATTERN = new RegExp(`^\\s*${escapeRegExp(JANITOR_TRAILER)}: (refactor|repair|architecture-docs)\\s*$`, 'im');
 const JANITOR_CO_AUTHOR_PATTERN = new RegExp(`^\\s*Co-authored-by:.*<${escapeRegExp(JANITOR_AUTHOR_EMAIL)}>`, 'im');
 
 /**

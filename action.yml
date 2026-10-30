@@ -95,9 +95,13 @@ inputs:
     required: false
     default: 'true'
   janitor_mode:
-    description: 'Execution mode (auto, repair-only, refactor-only)'
+    description: 'Execution mode (auto, repair-only, refactor-only, architecture-docs). architecture-docs refreshes only the files listed in architecture_docs and sweeps no code.'
     required: false
     default: 'auto'
+  architecture_docs:
+    description: 'Comma-separated repo-relative Markdown files (e.g. "docs/repo-architecture.md, docs/code-architecture.md") that janitor_mode architecture-docs keeps in step with the code. They are the only files that mode may change, whatever exclude_paths says. Read only in that mode; empty changes nothing.'
+    required: false
+    default: ''
   enable_llm_tools:
     description: 'Allow LLM to call workspace tools (read files, list directories, run safe commands)'
     required: false
@@ -186,7 +190,10 @@ inputs:
 runs:
   using: 'composite'
   steps:
+    # The cursor belongs to the code sweep. Architecture-docs mode measures drift from
+    # each doc's own git history instead, and leaves the cursor alone.
     - name: Restore Janitor State Cursor
+      if: inputs.janitor_mode != 'architecture-docs'
       uses: actions/cache/restore@v6
       with:
         path: .janitor-state.json
@@ -200,7 +207,13 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github_token }}
+        JANITOR_MODE: ${{ inputs.janitor_mode }}
       run: |
+        if [ "$JANITOR_MODE" = "architecture-docs" ]; then
+          echo "Architecture-docs mode: the engine measures drift from each doc's own history."
+          echo "has_prs=true" >> $GITHUB_OUTPUT
+          exit 0
+        fi
         if [ -f .janitor-state.json ]; then
           LAST_COMMIT=$(jq -r '.lastAnalyzedCommit // empty' .janitor-state.json 2>/dev/null || echo "")
           CURRENT_HEAD=$(git rev-parse HEAD 2>/dev/null || echo "")
@@ -218,7 +231,7 @@ runs:
               EMAIL=$(git show -s --format=%ae "$SHA" | tr '[:upper:]' '[:lower:]')
               [ "$EMAIL" = "bot@codejanitor.local" ] && continue
               MESSAGE=$(git show -s --format=%B "$SHA")
-              echo "$MESSAGE" | grep -qE '^[[:space:]]*Code-Janitor: (refactor|repair)[[:space:]]*$' && continue
+              echo "$MESSAGE" | grep -qE '^[[:space:]]*Code-Janitor: (refactor|repair|architecture-docs)[[:space:]]*$' && continue
               echo "$MESSAGE" | grep -qiE '^[[:space:]]*Co-authored-by:.*<bot@codejanitor\.local>' && continue
               OTHER_COMMIT="$SHA"
               break
@@ -247,7 +260,7 @@ runs:
 
 
     - name: Setup Go
-      if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('go.mod') != '' || hashFiles('**/go.mod') != '')
+      if: inputs.janitor_mode != 'architecture-docs' && (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('go.mod') != '' || hashFiles('**/go.mod') != '')
       uses: actions/setup-go@v7
       with:
         go-version: ${{ inputs.go_version != '' && inputs.go_version || null }}
@@ -255,7 +268,7 @@ runs:
         cache: true
 
     - name: Setup Node.js (Project)
-      if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('package.json') != '' || hashFiles('**/package.json') != '')
+      if: inputs.janitor_mode != 'architecture-docs' && (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('package.json') != '' || hashFiles('**/package.json') != '')
       uses: actions/setup-node@v7
       with:
         node-version: ${{ inputs.node_version != '' && inputs.node_version || (hashFiles('.nvmrc') == '' && hashFiles('.node-version') == '' && hashFiles('package.json') == '' && '24' || null) }}
@@ -264,17 +277,17 @@ runs:
         cache-dependency-path: ${{ (hashFiles('package-lock.json') != '' && 'package-lock.json') || (hashFiles('**/package-lock.json') != '' && '**/package-lock.json') || (hashFiles('yarn.lock') != '' && 'yarn.lock') || (hashFiles('**/yarn.lock') != '' && '**/yarn.lock') || (hashFiles('pnpm-lock.yaml') != '' && 'pnpm-lock.yaml') || (hashFiles('**/pnpm-lock.yaml') != '' && '**/pnpm-lock.yaml') || null }}
 
     - name: Setup Rust / Cargo
-      if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('Cargo.toml') != '' || hashFiles('**/Cargo.toml') != '')
+      if: inputs.janitor_mode != 'architecture-docs' && (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('Cargo.toml') != '' || hashFiles('**/Cargo.toml') != '')
       uses: dtolnay/rust-toolchain@v1
       with:
         toolchain: ${{ inputs.rust_toolchain }}
 
     - name: Cache Rust dependencies
-      if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('Cargo.toml') != '' || hashFiles('**/Cargo.toml') != '')
+      if: inputs.janitor_mode != 'architecture-docs' && (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('Cargo.toml') != '' || hashFiles('**/Cargo.toml') != '')
       uses: Swatinem/rust-cache@v2
 
     - name: Setup Python
-      if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('pyproject.toml') != '' || hashFiles('requirements.txt') != '' || hashFiles('.python-version') != '' || hashFiles('**/pyproject.toml') != '' || hashFiles('**/requirements.txt') != '')
+      if: inputs.janitor_mode != 'architecture-docs' && (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('pyproject.toml') != '' || hashFiles('requirements.txt') != '' || hashFiles('.python-version') != '' || hashFiles('**/pyproject.toml') != '' || hashFiles('**/requirements.txt') != '')
       uses: actions/setup-python@v7
       with:
         python-version: ${{ inputs.python_version != '' && inputs.python_version || (hashFiles('pyproject.toml') == '' && hashFiles('.python-version') == '' && '3.11' || null) }}
@@ -282,15 +295,17 @@ runs:
         cache: ${{ (hashFiles('pyproject.toml') != '' || hashFiles('**/pyproject.toml') != '' || hashFiles('requirements.txt') != '' || hashFiles('**/requirements.txt') != '' || hashFiles('Pipfile.lock') != '' || hashFiles('**/Pipfile.lock') != '') && 'pip' || null }}
 
     - name: Setup Java / Gradle (Android Kotlin)
-      if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('build.gradle') != '' || hashFiles('build.gradle.kts') != '' || hashFiles('**/build.gradle') != '' || hashFiles('**/build.gradle.kts') != '')
+      if: inputs.janitor_mode != 'architecture-docs' && (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (hashFiles('build.gradle') != '' || hashFiles('build.gradle.kts') != '' || hashFiles('**/build.gradle') != '' || hashFiles('**/build.gradle.kts') != '')
       uses: actions/setup-java@v6
       with:
         java-version: ${{ inputs.java_version }}
         distribution: 'temurin'
         cache: 'gradle'
 
+    # Architecture-docs mode reads and edits Markdown only, so the project toolchains above
+    # are skipped and the engine always gets its own Node.
     - name: Setup Node for Janitor Engine
-      if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && hashFiles('package.json') == '' && hashFiles('**/package.json') == ''
+      if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch') && (inputs.janitor_mode == 'architecture-docs' || (hashFiles('package.json') == '' && hashFiles('**/package.json') == ''))
       uses: actions/setup-node@v7
       with:
         node-version: ${{ inputs.node_version != '' && inputs.node_version || '24' }}
@@ -332,6 +347,7 @@ runs:
         ASSIGNEES: ${{ inputs.assignees }}
         DRAFT_PR: ${{ inputs.draft_pr }}
         JANITOR_MODE: ${{ inputs.janitor_mode }}
+        ARCHITECTURE_DOCS: ${{ inputs.architecture_docs }}
         ENABLE_LLM_TOOLS: ${{ inputs.enable_llm_tools }}
         MAX_LLM_TOOL_STEPS: ${{ inputs.max_llm_tool_steps }}
         LLM_MAX_RETRIES: ${{ inputs.llm_max_retries }}
@@ -349,7 +365,7 @@ runs:
         npx tsx code-janitor.ts "$GITHUB_WORKSPACE"
 
     - name: Save Updated Janitor State Cursor
-      if: (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch')
+      if: inputs.janitor_mode != 'architecture-docs' && (steps.check_prs.outputs.has_prs == 'true' || github.event_name == 'workflow_dispatch')
       uses: actions/cache/save@v6
       with:
         path: .janitor-state.json

@@ -109,10 +109,15 @@ on:
         required: false
         default: true
       janitor_mode:
-        description: 'Execution mode (auto, repair-only, refactor-only)'
+        description: 'Execution mode (auto, repair-only, refactor-only, architecture-docs)'
         type: string
         required: false
         default: 'auto'
+      architecture_docs:
+        description: 'Comma-separated Markdown files that janitor_mode architecture-docs keeps in step with the code, and the only files it may change. Empty changes nothing.'
+        type: string
+        required: false
+        default: ''
       enable_llm_tools:
         description: 'Allow LLM to call workspace tools (read files, list directories, run safe commands)'
         type: boolean
@@ -219,6 +224,7 @@ jobs:
           assignees: ${{ inputs.assignees }}
           draft_pr: ${{ inputs.draft_pr }}
           janitor_mode: ${{ inputs.janitor_mode }}
+          architecture_docs: ${{ inputs.architecture_docs }}
           enable_llm_tools: ${{ inputs.enable_llm_tools }}
           max_llm_tool_steps: ${{ inputs.max_llm_tool_steps }}
           llm_max_retries: ${{ inputs.llm_max_retries }}

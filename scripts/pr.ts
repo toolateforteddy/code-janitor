@@ -18,6 +18,7 @@ import {
     JANITOR_BRANCH_PREFIX,
     JANITOR_AUTHOR_EMAIL,
     JANITOR_TRAILER,
+    JanitorPRKind,
     isPlannedFix,
 } from './config.js';
 import { implementFixWithAgent } from './agent.js';
@@ -122,10 +123,13 @@ export function applyChangesToWorkspace(
     return { originalContents, editFailures };
 }
 
-export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir: string, modeType: 'repair' | 'refactor' = 'refactor', resolvedChanges?: FileChange[]): boolean {
+const PR_EMOJI: Record<JanitorPRKind, string> = { repair: '🚨', refactor: '🧹', 'architecture-docs': '📚' };
+const COMMIT_PREFIX: Record<JanitorPRKind, string> = { repair: 'fix', refactor: 'refactor', 'architecture-docs': 'docs' };
+
+export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir: string, modeType: JanitorPRKind = 'refactor', resolvedChanges?: FileChange[]): boolean {
     const execOpts: ExecFileSyncOptions = { cwd: workDir, stdio: ['pipe', 'pipe', 'pipe'] };
-    const emoji = modeType === 'repair' ? '🚨' : '🧹';
-    const prPrefix = modeType === 'repair' ? 'fix' : 'refactor';
+    const emoji = PR_EMOJI[modeType];
+    const prPrefix = COMMIT_PREFIX[modeType];
 
     // Prefer the caller's already-resolved changes (correct post-remap/post-auto-fix file
     // paths) over re-deriving from `fix`, which still carries the model's original proposed
