@@ -470,14 +470,14 @@ function openDocsPR(fix: FixProposal, changes: FileChange[], head: string, docs:
 }
 
 /** The whole mode: find each doc's window, ask for its drift, keep what checks out, open one PR. */
-export async function runArchitectureDocs(docs: string[] = architectureDocs, workDir: string = process.cwd()): Promise<void> {
+export async function runArchitectureDocs(docs: string[] = architectureDocs, workDir: string = process.cwd(), startHead: string = ''): Promise<void> {
     const summary = getSummary();
-    summary.sweep = 'architecture-docs';
+    if (summary.sweep === 'none') summary.sweep = 'architecture-docs';
     if (rejectedArchitectureDocs.length > 0) {
         recordNote(`Ignored architecture_docs entries that are not repo-relative Markdown paths: ${rejectedArchitectureDocs.join(', ')}.`);
     }
     if (docs.length === 0) {
-        throw new Error("janitor_mode 'architecture-docs' needs the architecture_docs input: a comma-separated list of the Markdown files to keep up to date.");
+        throw new Error("janitor_mode 'docs-only' needs the architecture_docs input: a comma-separated list of the Markdown files to keep up to date.");
     }
 
     const prState = fetchDocsPRState(workDir);
@@ -487,7 +487,7 @@ export async function runArchitectureDocs(docs: string[] = architectureDocs, wor
         return;
     }
 
-    const head = git(['rev-parse', 'HEAD'], workDir);
+    const head = startHead || git(['rev-parse', 'HEAD'], workDir);
     const windows: DocWindow[] = [];
     const toCreate: string[] = [];
     for (const doc of docs) {

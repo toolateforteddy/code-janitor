@@ -109,12 +109,12 @@ on:
         required: false
         default: true
       janitor_mode:
-        description: 'Execution mode (auto, repair-only, refactor-only, architecture-docs)'
+        description: 'Execution mode (auto, repair-only, refactor-only, docs-only)'
         type: string
         required: false
         default: 'auto'
       architecture_docs:
-        description: 'Comma-separated Markdown files that janitor_mode architecture-docs keeps in step with the code, and the only files it may change. Empty changes nothing.'
+        description: 'Comma-separated Markdown files to keep in step with the code. Setting it turns the architecture-docs refresh on; it may change these files and nothing else. Empty turns it off.'
         type: string
         required: false
         default: ''

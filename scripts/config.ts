@@ -161,10 +161,18 @@ export const JANITOR_TRAILER = 'Code-Janitor';
 export type JanitorPRKind = 'repair' | 'refactor' | 'architecture-docs';
 
 /**
- * `janitor_mode` value for refreshing the repo maps listed in `architecture_docs`
- * (see archdocs.ts) instead of sweeping code.
+ * `janitor_mode` value that skips the code sweep, so a run only refreshes the repo maps
+ * listed in `architecture_docs` (see archdocs.ts). Setting `architecture_docs` is what
+ * turns the refresh on; this only keeps a run from doing anything else.
  */
-export const ARCHITECTURE_DOCS_MODE = 'architecture-docs';
+export const DOCS_ONLY_MODE = 'docs-only';
+
+/**
+ * Whether this run sweeps code. The action decides (no new commits since the cursor
+ * means no sweep, but the docs refresh may still run) and says so in JANITOR_SWEEP;
+ * a run started any other way sweeps.
+ */
+export const sweepEnabled = process.env.JANITOR_SWEEP !== 'false';
 
 /** Branch prefix of an architecture-docs PR; kept apart from code-fix PRs, which dedupe against each other. */
 export const ARCHITECTURE_DOCS_BRANCH_PREFIX = `${JANITOR_BRANCH_PREFIX}architecture-docs-`;
@@ -177,7 +185,7 @@ export const ARCHITECTURE_DOCS_CREATED_TRAILER = 'Architecture-Docs-Created';
 
 /**
  * Normalizes ARCHITECTURE_DOCS into repo-relative Markdown paths. These are the only
- * files architecture-docs mode may change, so anything that could reach further is
+ * files the architecture-docs refresh may change, so anything that could reach further is
  * refused rather than tidied: absolute paths, `..`, globs, and non-Markdown files.
  */
 export function parseArchitectureDocs(raw: string | undefined): { docs: string[]; rejected: string[] } {
