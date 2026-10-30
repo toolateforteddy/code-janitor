@@ -364,6 +364,8 @@ interface StructuredRequestOptions {
      * Ignored after a switch to the fallback, which keeps its own model.
      */
     primaryModelOverride?: string;
+    /** Turn budget for a claude-code request instead of `claudeCodeMaxTurns`, for a request that has more to read. */
+    claudeCodeMaxTurns?: number;
 }
 
 export async function generateStructuredWithTools<T extends z.ZodTypeAny>(
@@ -395,7 +397,8 @@ export async function generateStructuredWithTools<T extends z.ZodTypeAny>(
         if (choice.provider === CLAUDE_CODE_PROVIDER) {
             // Claude Code inspects the workspace with its own read-only tools, so the
             // janitor's tool set only decides whether inspection is allowed at all.
-            let maxTurns = claudeCodeMaxTurns;
+            const configuredTurns = options.claudeCodeMaxTurns ?? claudeCodeMaxTurns;
+            let maxTurns = configuredTurns;
             return withLlmRetry(async () => {
                 try {
                     return await generateWithClaudeCode(schema, system, prompt, {
@@ -409,7 +412,7 @@ export async function generateStructuredWithTools<T extends z.ZodTypeAny>(
                     // There is no tool-less re-ask on this path, so a retry that ran out of
                     // turns gets more of them rather than the same budget again.
                     if (isClaudeCodeTurnLimitError(err)) {
-                        const next = nextClaudeCodeTurnBudget(maxTurns, claudeCodeMaxTurns);
+                        const next = nextClaudeCodeTurnBudget(maxTurns, configuredTurns);
                         if (next > maxTurns) {
                             console.warn(`⚠️ Claude Code used all ${maxTurns} turn(s) without answering; the next attempt gets ${next}.`);
                             maxTurns = next;

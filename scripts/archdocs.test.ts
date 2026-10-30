@@ -14,6 +14,9 @@ import {
     listWindowCommits,
     readDocsPRState,
     resolveCitations,
+    splitDocUnits,
+    filterUnverifiedUnits,
+    describeLayout,
     DocEdit,
     WindowCommit,
 } from './archdocs.js';
@@ -174,7 +177,79 @@ describe('archdocs', () => {
             ]);
             assert.equal(state.open, null);
             assert.equal(state.rejectedHead, 'bbbbbbb2');
+            assert.deepEqual(state.rejectedCreated, []);
             assert.deepEqual(readDocsPRState([{ number: 10, url: 'u', headRefName: 'janitor/architecture-docs-5', state: 'OPEN' }]).open, { number: 10, url: 'u' });
+        });
+    });
+
+    describe('readDocsPRState() for a rejected new doc', () => {
+        it('lists the docs the latest rejected PR wrote from scratch', () => {
+            const state = readDocsPRState([{ number: 4, headRefName: 'janitor/architecture-docs-9', state: 'CLOSED', mergedAt: null,
+                body: 'x\n\nArchitecture-Docs-Created: docs/code-architecture.md\nArchitecture-Docs-Head: abcdef12' }]);
+            assert.deepEqual(state.rejectedCreated, ['docs/code-architecture.md']);
+            assert.equal(state.rejectedHead, 'abcdef12');
+        });
+    });
+
+    describe('splitDocUnits()', () => {
+        it('splits headings, rows, list items with continuations, paragraphs and fences, and joins back unchanged', () => {
+            const md = '# Map\n\nA paragraph\nwrapped.\n\n- item one\n  continued\n- item two\n\n| a | b |\n| --- | --- |\n\n```bash\ncargo test\n```\n';
+            const units = splitDocUnits(md);
+            assert.ok(units.includes('A paragraph\nwrapped.'));
+            assert.ok(units.includes('- item one\n  continued'));
+            assert.ok(units.includes('| --- | --- |'));
+            assert.ok(units.includes('```bash\ncargo test\n```'));
+            assert.equal(units.join('\n'), md);
+        });
+    });
+
+    describe('filterUnverifiedUnits()', () => {
+        it('keeps what checks out and leaves out each unit, or shell line, that does not', () => {
+            const md = [
+                '# Repo architecture',
+                '',
+                'The engine is `rust/engine/`.',
+                '',
+                'The lab is `rust/lab/`.',
+                '',
+                '| `sim` | `rust/sim/` |',
+                '| `ghost` | `rust/ghost/` |',
+                '',
+                '- Runs `run_fights`.',
+                '- Runs `run_battles`.',
+                '',
+                '```bash',
+                'cd rust && cargo test -p sim',
+                'cargo test -p lab',
+                '```',
+                '',
+                '```mermaid',
+                'A --> rust/nowhere',
+                '```',
+            ].join('\n');
+            const { content, dropped } = filterUnverifiedUnits(md, ['Engine'], index, 'docs');
+            assert.match(content, /`rust\/engine\/`/);
+            assert.match(content, /\| `sim` \|/);
+            assert.match(content, /run_fights/);
+            assert.match(content, /cargo test -p sim/);
+            assert.match(content, /rust\/nowhere/, 'a diagram is kept as written');
+            assert.doesNotMatch(content, /rust\/lab|rust\/ghost|run_battles|-p lab/);
+            assert.equal(dropped.length, 4);
+            assert.ok(!dropped.some(d => d.text.startsWith('The engine')));
+        });
+
+        it('drops a unit that states a claim the repository does not have', () => {
+            const { content, dropped } = filterUnverifiedUnits('One.\n\nTwo uses Ghosty.\n', ['Ghosty'], index, '');
+            assert.equal(content, 'One.\n');
+            assert.match(dropped[0].reason, /`Ghosty` could not be found/);
+        });
+    });
+
+    describe('describeLayout()', () => {
+        it('lists directories two levels deep', () => {
+            const layout = describeLayout(index).split('\n');
+            assert.ok(layout.includes('rust/sim/'));
+            assert.ok(!layout.includes('rust/sim/src/'));
         });
     });
 
@@ -188,6 +263,14 @@ describe('archdocs', () => {
             assert.match(body, /### Left out[\s\S]*Bad path\./);
             assert.match(body, /Commands were not run\./);
             assert.match(body, /\nArchitecture-Docs-Head: f{40}$/);
+        });
+
+        it('describes a new doc and marks it for the next run', () => {
+            const body = buildDocsPRDescription('f'.repeat(40), [], [], [],
+                [{ doc: 'docs/code-architecture.md', summary: 'The layers and modules.', dropped: [{ text: 'The lab is `rust/lab/`.', reason: 'no' }] }]);
+            assert.match(body, /### `docs\/code-architecture\.md` \(new\)/);
+            assert.match(body, /Left out of it[\s\S]*rust\/lab/);
+            assert.match(body, /Architecture-Docs-Created: docs\/code-architecture\.md\nArchitecture-Docs-Head:/);
         });
     });
 });

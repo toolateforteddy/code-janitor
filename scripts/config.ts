@@ -172,6 +172,9 @@ export const ARCHITECTURE_DOCS_BRANCH_PREFIX = `${JANITOR_BRANCH_PREFIX}architec
 /** Line in an architecture-docs PR body naming the commit it brought the docs up to. */
 export const ARCHITECTURE_DOCS_HEAD_TRAILER = 'Architecture-Docs-Head';
 
+/** Line in an architecture-docs PR body for each listed doc it wrote from scratch. */
+export const ARCHITECTURE_DOCS_CREATED_TRAILER = 'Architecture-Docs-Created';
+
 /**
  * Normalizes ARCHITECTURE_DOCS into repo-relative Markdown paths. These are the only
  * files architecture-docs mode may change, so anything that could reach further is

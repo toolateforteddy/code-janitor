@@ -445,9 +445,13 @@ jobs:
    Markdown is never evidence: a name that only appears in a doc has not been shown to exist in the code. **Commands are checked, not run**: a map can name a deploy script as easily as a test, and a model's answer is not a reason to run either.
 5. **Opens one PR, or none.** Nothing drifted, or nothing survived: the run ends without a PR. Otherwise one PR (draft per `draft_pr`) on a `janitor/architecture-docs-<timestamp>` branch, separate from code-fix PRs and left out of their deduplication. Its body lists each change with the commit that caused it and what was left out and why. The janitor writes the edits itself, to the listed files only, and refuses to open the PR if anything else in the worktree changed.
 
+### Bootstrapping a doc that does not exist yet
+
+List a path that is not there yet and the next run writes it, which is how a repository gets its first maps. The model is shown the tracked directories two levels deep and any listed maps that already exist (to match their voice and stay off their ground), reads the code with the same read-only tools and twice the `claude_code_max_turns`, and returns the whole doc. It is then checked a paragraph, list item and table row at a time with the same rules as an edit; a unit with anything that cannot be found is left out, as is a failing line of a shell fence, and the PR lists what was left out. The line budget does not apply to a new doc. A doc with nothing left but headings is not created. If a PR that wrote a doc is closed without merging (`Architecture-Docs-Created:` in its body), the doc is not written again on later runs; write it by hand, or reopen that PR.
+
 ### Only the listed files
 
-In this mode the listed docs are the only files that can change, whatever `exclude_paths` allows; the model has no write tools, and the janitor applies edits to those paths alone. Other docs, which hold design decisions somebody made, are read as context at most. `target_path` and `exclude_paths` do not narrow the window either, because a repo map describes the whole repository. Entries in `architecture_docs` that are absolute, contain `..` or a glob, or are not Markdown are ignored with a note in the job summary. A listed doc that does not exist yet is skipped: the mode updates maps, it does not write them.
+In this mode the listed docs are the only files that can change, whatever `exclude_paths` allows; the model has no write tools, and the janitor applies edits to those paths alone. Other docs, which hold design decisions somebody made, are read as context at most. `target_path` and `exclude_paths` do not narrow the window either, because a repo map describes the whole repository. Entries in `architecture_docs` that are absolute, contain `..` or a glob, or are not Markdown are ignored with a note in the job summary. A listed doc that does not exist yet is written from scratch, as described above.
 
 ### Why a weekly run of its own
 

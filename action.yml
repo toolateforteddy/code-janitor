@@ -99,7 +99,7 @@ inputs:
     required: false
     default: 'auto'
   architecture_docs:
-    description: 'Comma-separated repo-relative Markdown files (e.g. "docs/repo-architecture.md, docs/code-architecture.md") that janitor_mode architecture-docs keeps in step with the code. They are the only files that mode may change, whatever exclude_paths says. Read only in that mode; empty changes nothing.'
+    description: 'Comma-separated repo-relative Markdown files (e.g. "docs/repo-architecture.md, docs/code-architecture.md") that janitor_mode architecture-docs keeps in step with the code. They are the only files that mode may change, whatever exclude_paths says; one that does not exist yet is written from scratch. Read only in that mode; empty changes nothing.'
     required: false
     default: ''
   enable_llm_tools:

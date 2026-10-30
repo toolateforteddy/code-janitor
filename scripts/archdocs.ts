@@ -7,6 +7,8 @@ import {
     rejectedArchitectureDocs,
     ARCHITECTURE_DOCS_BRANCH_PREFIX,
     ARCHITECTURE_DOCS_HEAD_TRAILER,
+    ARCHITECTURE_DOCS_CREATED_TRAILER,
+    claudeCodeMaxTurns,
     enforceLineBudget,
     maxLineDiff,
     FileChange,
@@ -18,7 +20,7 @@ import { applyEdits } from './edits.js';
 import { countDiffLines } from './linebudget.js';
 import { createAndSubmitPR } from './pr.js';
 import { listChangedPaths } from './agent.js';
-import { RepoIndex, addedDocItems, verifyDocItem, verifyCodeSpan, looksLikePath, VerifyResult } from './archverify.js';
+import { RepoIndex, addedDocItems, extractDocItems, verifyDocItem, verifyCodeSpan, looksLikePath, VerifyResult } from './archverify.js';
 import { getSummary, recordFixResult, recordNote } from './summary.js';
 
 /**
@@ -34,6 +36,9 @@ import { getSummary, recordFixResult, recordNote } from './summary.js';
  *    one file, so no other path can be touched however the model answers.
  *  - Everything an edit adds is checked against the tree (archverify.ts), and an edit
  *    with anything that does not check out is dropped whole, not trimmed.
+ *  - A listed doc that does not exist yet is written from scratch, to bootstrap a repo's
+ *    maps. Every paragraph, list item and table row of it is checked the same way, and
+ *    one that does not check out is left out rather than the whole doc.
  *  - Nothing drifted, or nothing survived: no PR. Otherwise one draft PR for all the
  *    docs, apart from code-fix PRs, listing each change and the commit behind it.
  */
@@ -51,6 +56,114 @@ export const docRefreshSchema = z.object({
 });
 
 export type DocEdit = z.infer<typeof docEditSchema>;
+
+export const docCreateSchema = z.object({
+    content: z.string().describe('The complete Markdown doc'),
+    summary: z.string().describe('One line for the pull request: what the doc covers'),
+    claims: z.array(z.string()).describe('Every path, type or function name, and command the doc states, written as it should be looked up'),
+});
+
+export interface DroppedUnit {
+    text: string;
+    reason: string;
+}
+
+export interface CreatedDoc {
+    doc: string;
+    summary: string;
+    dropped: DroppedUnit[];
+}
+
+const SHELL_FENCE = /^\s*(`{3,}|~{3,})\s*(bash|sh|shell|console|zsh)\s*$/i;
+
+/**
+ * Splits Markdown into the units a new doc is checked by: a heading, a table row, a list
+ * item with its continuation lines, a paragraph, or a fenced block. Blank lines are kept
+ * as their own units so the kept units join back into the doc unchanged.
+ */
+export function splitDocUnits(markdown: string): string[] {
+    const units: string[] = [];
+    let current: string[] = [];
+    let kind: 'para' | 'item' | 'fence' | null = null;
+    let fenceMarker = '';
+    const flush = () => {
+        if (current.length > 0) units.push(current.join('\n'));
+        current = [];
+        kind = null;
+    };
+    for (const line of markdown.split('\n')) {
+        if (kind === 'fence') {
+            current.push(line);
+            if (line.trim().startsWith(fenceMarker)) flush();
+            continue;
+        }
+        const fence = line.match(/^\s*(`{3,}|~{3,})/);
+        if (fence) {
+            flush();
+            kind = 'fence';
+            fenceMarker = fence[1];
+            current.push(line);
+        } else if (!line.trim() || /^\s*(#|\|)/.test(line)) {
+            flush();
+            units.push(line);
+        } else if (/^\s*([-*+]|\d+[.)])\s/.test(line)) {
+            flush();
+            kind = 'item';
+            current.push(line);
+        } else if (kind === 'item' && /^\s+/.test(line)) {
+            current.push(line);
+        } else {
+            if (kind !== 'para') flush();
+            kind = 'para';
+            current.push(line);
+        }
+    }
+    flush();
+    return units;
+}
+
+/**
+ * Keeps the units of a new doc whose every path, name, link and command checks out, and
+ * that state none of the claims the model listed that do not. A shell fence is checked
+ * line by line and loses only its failing lines; any other fence (a diagram) is kept as
+ * written, as it is for an edit.
+ */
+export function filterUnverifiedUnits(content: string, claims: string[], index: RepoIndex, docDir: string): { content: string; dropped: DroppedUnit[] } {
+    const failedClaims = claims
+        .map(c => c.trim().replace(/^`+|`+$/g, ''))
+        .filter(c => c && !verifyClaim(c, index, docDir).ok);
+    const kept: string[] = [];
+    const dropped: DroppedUnit[] = [];
+    for (const unit of splitDocUnits(content)) {
+        if (/^\s*(`{3,}|~{3,})/.test(unit)) {
+            const lines = unit.split('\n');
+            if (!SHELL_FENCE.test(lines[0]) || lines.length < 2) {
+                kept.push(unit);
+                continue;
+            }
+            const body = lines.slice(1, -1).filter(line => {
+                const command = line.trim().replace(/^\$\s+/, '').replace(/\s+#.*$/, '');
+                if (!command || command.startsWith('#')) return true;
+                const result = verifyDocItem({ kind: 'command', text: command }, index, docDir);
+                if (!result.ok) dropped.push({ text: line.trim(), reason: result.reason });
+                return result.ok;
+            });
+            if (body.some(l => l.trim())) kept.push([lines[0], ...body, lines[lines.length - 1]].join('\n'));
+            continue;
+        }
+        const reasons = [...new Set([
+            ...extractDocItems(unit).map(item => verifyDocItem(item, index, docDir)).filter(r => !r.ok).map(r => r.reason),
+            ...failedClaims.filter(c => unit.includes(c)).map(c => `\`${c}\` could not be found`),
+        ])];
+        if (reasons.length > 0) {
+            dropped.push({ text: unit.trim(), reason: reasons.join('; ') });
+            continue;
+        }
+        kept.push(unit);
+    }
+    const reassembled = kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    return { content: reassembled ? reassembled + '\n' : '', dropped };
+}
 
 export interface WindowCommit {
     sha: string;
@@ -234,20 +347,53 @@ export function buildDocPrompt(doc: string, content: string, window: DocWindow, 
         `Commits since it was last updated (after ${window.start.slice(0, 12)}), oldest first, each with the files it added (A), deleted (D), renamed (R) or modified (M):\n\n${windowText}`;
 }
 
+export function buildCreateSystemPrompt(doc: string, docs: string[]): string {
+    const others = docs.filter(d => d !== doc);
+    const dir = path.posix.dirname(doc);
+    return `
+    You are writing ${doc}, an architecture map of this repository that does not exist yet. Its reader (often an AI agent) uses it to find what is where without reading all of the code.
+    ${others.length ? `It is one of a set of maps: ${docs.join(', ')}. Cover what its name says and leave the others' ground to them. Any that already exist are shown to you: match their voice and link to them rather than repeating them.` : ''}
+
+    RULES:
+    1. Describe what is there now: the top-level directories and what each holds, the modules or packages and what each is responsible for, the entry points, which files are generated and the exact command that regenerates each, and where to start for common tasks. Short sentences and tables, not essays.
+    2. Check every claim in the code before you make it, with the read-only tools. Write every path, type, function and command in backticks. Each paragraph, list item and table row is checked afterwards against the repository, and one that names anything that cannot be found is left out of the doc.
+    3. Nothing about design decisions, plans, history or opinions: those belong to people. Do not copy other docs; link to them.
+    4. Follow the repository's own documentation conventions (its agent instructions say what they are). Links are relative to ${dir === '.' ? 'the repository root' : `${dir}/`}.
+    5. List in 'claims' every path, name and command the doc states.
+  `;
+}
+
+export function buildCreatePrompt(doc: string, references: Array<{ doc: string; content: string }>, layout: string): string {
+    const refs = references.map(r => `The existing map ${r.doc}:\n\n<doc>\n${r.content.slice(0, 20000)}\n</doc>`).join('\n\n');
+    return `Write ${doc}.\n\nTracked directories, two levels deep:\n\n${layout}${refs ? `\n\n${refs}` : ''}`;
+}
+
+/** The repository's directories, two levels deep and dot-directories left out, as a starting point for a new map. */
+export function describeLayout(index: RepoIndex, maxEntries: number = 200): string {
+    const dirs = [...index.dirs].filter(d => d.split('/').length <= 2 && !d.split('/').some(seg => seg.startsWith('.'))).sort();
+    const shown = dirs.slice(0, maxEntries).map(d => `${d}/`);
+    if (dirs.length > maxEntries) shown.push(`... and ${dirs.length - maxEntries} more`);
+    return shown.join('\n') || '(no subdirectories)';
+}
+
 /** The architecture-docs PRs on this repository: whether one is still open, and the head the latest rejected one covered. */
 export function readDocsPRState(prs: Array<{ number?: number; url?: string; headRefName?: string; state?: string; mergedAt?: string | null; body?: string }>): {
     open: { number: number; url: string } | null;
     rejectedHead: string;
+    /** Docs the latest rejected PR would have created; not written again until a human asks. */
+    rejectedCreated: string[];
 } {
     const docsPRs = prs.filter(pr => (pr.headRefName ?? '').startsWith(ARCHITECTURE_DOCS_BRANCH_PREFIX));
     const openPR = docsPRs.find(pr => (pr.state ?? '').toUpperCase() === 'OPEN');
     const rejected = docsPRs
         .filter(pr => (pr.state ?? '').toUpperCase() === 'CLOSED' && !pr.mergedAt)
         .sort((a, b) => (b.number ?? 0) - (a.number ?? 0))[0];
+    const createdPattern = new RegExp(`^\\s*${ARCHITECTURE_DOCS_CREATED_TRAILER}:\\s*(\\S+)\\s*$`, 'gim');
     const headPattern = new RegExp(`^\\s*${ARCHITECTURE_DOCS_HEAD_TRAILER}:\\s*([0-9a-f]{7,40})\\s*$`, 'im');
     return {
         open: openPR ? { number: openPR.number ?? 0, url: openPR.url ?? '' } : null,
         rejectedHead: rejected?.body?.match(headPattern)?.[1] ?? '',
+        rejectedCreated: [...(rejected?.body ?? '').matchAll(createdPattern)].map(m => m[1]),
     };
 }
 
@@ -259,15 +405,23 @@ function fetchDocsPRState(cwd: string): ReturnType<typeof readDocsPRState> {
         return readDocsPRState(JSON.parse(raw || '[]'));
     } catch (err) {
         console.warn(`⚠️ Could not list earlier architecture-docs PRs (continuing as if there were none): ${err instanceof Error ? err.message : String(err)}`);
-        return { open: null, rejectedHead: '' };
+        return { open: null, rejectedHead: '', rejectedCreated: [] };
     }
 }
 
-export function buildDocsPRDescription(head: string, windows: DocWindow[], accepted: AcceptedEdit[], dropped: DroppedEdit[]): string {
+export function buildDocsPRDescription(head: string, windows: DocWindow[], accepted: AcceptedEdit[], dropped: DroppedEdit[], created: CreatedDoc[] = []): string {
     const lines: string[] = [
-        `Brings the architecture docs up to date with \`${head.slice(0, 12)}\`. Each change below names the commit that made the doc wrong.`,
+        `Brings the architecture docs up to date with \`${head.slice(0, 12)}\`.${accepted.length > 0 ? ' Each change below names the commit that made the doc wrong.' : ''}`,
         '',
     ];
+    for (const doc of created) {
+        lines.push(`### \`${doc.doc}\` (new)`, '', `${doc.summary} Written from scratch because it is listed in \`architecture_docs\` and did not exist.`, '');
+        if (doc.dropped.length > 0) {
+            lines.push('Left out of it, because they could not be checked:', '');
+            for (const d of doc.dropped) lines.push(`- "${d.text.replace(/\s+/g, ' ').slice(0, 120)}" (${d.reason})`);
+            lines.push('');
+        }
+    }
     for (const window of windows) {
         const edits = accepted.filter(a => a.doc === window.doc);
         if (edits.length === 0) continue;
@@ -284,8 +438,9 @@ export function buildDocsPRDescription(head: string, windows: DocWindow[], accep
         lines.push('');
     }
     lines.push(
-        'Every path, name and command these edits add was checked against the tree at that commit: paths exist, names appear in the code, and commands name scripts, packages, npm scripts and make targets that exist. Commands were not run. No file other than the listed architecture docs is changed.',
+        `Every path, name and command ${created.length > 0 ? 'in these docs' : 'these edits add'} was checked against the tree at that commit: paths exist, names appear in the code, and commands name scripts, packages, npm scripts and make targets that exist. Commands were not run. No file other than the listed architecture docs is changed.`,
         '',
+        ...created.map(c => `${ARCHITECTURE_DOCS_CREATED_TRAILER}: ${c.doc}`),
         `${ARCHITECTURE_DOCS_HEAD_TRAILER}: ${head}`,
     );
     return lines.join('\n');
@@ -300,6 +455,7 @@ function openDocsPR(fix: FixProposal, changes: FileChange[], head: string, docs:
         execFileSync('git', ['worktree', 'add', '-b', branchName, worktreePath, head], { stdio: ['pipe', 'pipe', 'pipe'] });
         for (const change of changes) {
             if (!docs.includes(change.filePath)) throw new Error(`Refusing to write ${change.filePath}: not a listed architecture doc`);
+            fs.mkdirSync(path.dirname(path.join(worktreePath, change.filePath)), { recursive: true });
             fs.writeFileSync(path.join(worktreePath, change.filePath), change.updatedContent!, 'utf-8');
         }
         const stray = listChangedPaths(worktreePath).filter(p => !docs.includes(p));
@@ -333,9 +489,15 @@ export async function runArchitectureDocs(docs: string[] = architectureDocs, wor
 
     const head = git(['rev-parse', 'HEAD'], workDir);
     const windows: DocWindow[] = [];
+    const toCreate: string[] = [];
     for (const doc of docs) {
         if (!fs.existsSync(path.join(workDir, doc))) {
-            recordNote(`\`${doc}\` does not exist; architecture-docs mode only updates docs that are already there.`);
+            if (prState.rejectedCreated.includes(doc)) {
+                recordNote(`\`${doc}\` does not exist, but the last docs PR that wrote it was closed without merging; not writing it again until it is written by hand or that PR is reopened.`);
+            } else {
+                console.log(`📚 ${doc} does not exist yet; it will be written from scratch.`);
+                toCreate.push(doc);
+            }
             continue;
         }
         const last = docLastCommit(doc, workDir);
@@ -350,7 +512,7 @@ export async function runArchitectureDocs(docs: string[] = architectureDocs, wor
         console.log(`📚 ${doc}: ${commits.length} commit(s) since ${start.slice(0, 12)}${start === last ? ' (its last update)' : ' (covered by a rejected docs PR)'}.`);
         if (commits.length > 0) windows.push({ doc, start, commits });
     }
-    if (windows.length === 0) {
+    if (windows.length === 0 && toCreate.length === 0) {
         recordNote('No commits since the architecture docs were last updated; nothing to check.');
         return;
     }
@@ -386,6 +548,38 @@ export async function runArchitectureDocs(docs: string[] = architectureDocs, wor
         console.log(`   ${result.accepted.length} edit(s) kept, ${result.dropped.length} dropped.`);
     }
 
+    // Bootstrapping: a listed doc that does not exist is written whole, and checked a
+    // paragraph, list item and table row at a time. The line budget is for edits; a new
+    // map is as long as the repository needs.
+    const created: CreatedDoc[] = [];
+    for (const doc of toCreate) {
+        const docDir = path.posix.dirname(doc) === '.' ? '' : path.posix.dirname(doc);
+        const references = docs
+            .filter(d => d !== doc && fs.existsSync(path.join(workDir, d)))
+            .map(d => ({ doc: d, content: changes.find(c => c.filePath === d)?.updatedContent ?? fs.readFileSync(path.join(workDir, d), 'utf-8') }));
+        console.log(`🤖 Asking the model to write ${doc}...`);
+        const answer = await generateStructuredWithTools(
+            docCreateSchema,
+            buildCreateSystemPrompt(doc, docs),
+            buildCreatePrompt(doc, references, describeLayout(index)),
+            tools,
+            workDir,
+            // Writing a map takes reading far more of the code than checking one.
+            { claudeCodeMaxTurns: claudeCodeMaxTurns * 2 },
+        );
+        summary.proposed += 1;
+        const result = filterUnverifiedUnits(answer.content, answer.claims, index, docDir);
+        for (const d of result.dropped) console.warn(`   ✂️ Left out of ${doc}: "${d.text.slice(0, 80)}" -- ${d.reason}`);
+        for (const d of result.dropped) recordNote(`Left out of the new \`${doc}\`: "${d.text.replace(/\s+/g, ' ').slice(0, 80)}" (${d.reason})`);
+        if (!result.content.replace(/^\s*#.*$/gm, '').trim()) {
+            recordNote(`Nothing written for \`${doc}\` survived verification; it was not created.`);
+            continue;
+        }
+        changes.push({ filePath: doc, updatedContent: result.content });
+        created.push({ doc, summary: answer.summary.trim(), dropped: result.dropped });
+        console.log(`   Wrote ${doc}: ${result.content.split('\n').length} lines, ${result.dropped.length} part(s) left out.`);
+    }
+
     for (const d of dropped) recordNote(`Dropped an edit to \`${d.doc}\`: ${d.summary} (${d.reason})`);
     if (changes.length === 0) {
         console.log('📚 Nothing drifted that could be verified; no PR.');
@@ -397,8 +591,8 @@ export async function runArchitectureDocs(docs: string[] = architectureDocs, wor
 
     const fix: FixProposal = {
         slug: 'architecture-docs',
-        title: `Refresh architecture docs (${changes.map(c => path.posix.basename(c.filePath)).join(', ')})`,
-        description: buildDocsPRDescription(head, windows, accepted, dropped),
+        title: `Refresh architecture docs (${changes.map(c => `${created.some(d => d.doc === c.filePath) ? 'new ' : ''}${path.posix.basename(c.filePath)}`).join(', ')})`,
+        description: buildDocsPRDescription(head, windows, accepted, dropped, created),
     };
     openDocsPR(fix, changes, head, docs);
 }
