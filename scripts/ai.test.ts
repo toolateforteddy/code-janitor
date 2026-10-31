@@ -23,7 +23,12 @@ import {
     summarizeToolSteps,
     buildFinalizationPrompt,
     TOOL_TRANSCRIPT_LIMIT,
+    generateStructuredWithTools,
+    modelFallback,
 } from './ai.js';
+import { z } from 'zod';
+import { claudeCodeMaxTurns } from './config.js';
+import { CLAUDE_CODE_PROVIDER, nextClaudeCodeTurnBudget } from './claudecode.js';
 
 describe('ai module test suite', () => {
 
@@ -517,6 +522,59 @@ Unresolved reference: ScribblePuzzleViewModel in ScribblePuzzleViewModel.kt: (12
             } finally {
                 fs.rmSync(tempDir, { recursive: true, force: true });
             }
+        });
+    });
+
+    describe('generateStructuredWithTools() claude-code turn budget', { skip: process.platform === 'win32' }, () => {
+        const schema = z.object({ ok: z.boolean() });
+
+        // Runs one claude-code request against a fake `claude` on PATH and returns the
+        // turn budgets (`--max-turns`, which is the tool budget + 1) it was started with.
+        async function turnBudgetsSeen(failFirst: boolean, claudeCodeMaxTurnsOverride?: number): Promise<number[]> {
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'janitor-fake-claude-'));
+            const originalPath = process.env.PATH;
+            const fallback = modelFallback as any;
+            const originalPrimary = fallback.primary;
+            try {
+                const logFile = path.join(tempDir, 'turns.log');
+                const countFile = path.join(tempDir, 'count');
+                const failure = '{"subtype":"error_max_turns","is_error":true}';
+                const success = '{"subtype":"success","structured_output":{"ok":true}}';
+                const script = [
+                    '#!/bin/sh',
+                    'prev=""',
+                    `for a in "$@"; do [ "$prev" = "--max-turns" ] && echo "$a" >> "${logFile}"; prev="$a"; done`,
+                    'cat > /dev/null',
+                    `n=$(cat "${countFile}" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "${countFile}"`,
+                    `if [ "${failFirst ? 'yes' : 'no'}" = yes ] && [ "$n" = 1 ]; then echo '${failure}'; else echo '${success}'; fi`,
+                ].join('\n');
+                fs.writeFileSync(path.join(tempDir, 'claude'), script, { mode: 0o755 });
+                process.env.PATH = `${tempDir}${path.delimiter}${originalPath}`;
+                fallback.primary = { provider: CLAUDE_CODE_PROVIDER, model: '' };
+
+                const options = claudeCodeMaxTurnsOverride === undefined ? {} : { claudeCodeMaxTurns: claudeCodeMaxTurnsOverride };
+                const result = await generateStructuredWithTools(schema, 'system', 'prompt', undefined, tempDir, options);
+                assert.deepEqual(result, { ok: true });
+                return fs.readFileSync(logFile, 'utf-8').trim().split('\n').map(line => Number(line) - 1);
+            } finally {
+                fallback.primary = originalPrimary;
+                process.env.PATH = originalPath;
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            }
+        }
+
+        it('uses the per-request override instead of the global default', async () => {
+            assert.deepEqual(await turnBudgetsSeen(false, 50), [50]);
+        });
+
+        it('uses the global default when no override is given', async () => {
+            assert.deepEqual(await turnBudgetsSeen(false), [claudeCodeMaxTurns]);
+        });
+
+        it('derives the retry budget after a turn-limit error from the override', async () => {
+            const budgets = await turnBudgetsSeen(true, 50);
+            assert.deepEqual(budgets, [50, nextClaudeCodeTurnBudget(50, 50)]);
+            assert.equal(budgets[1], 100);
         });
     });
 
