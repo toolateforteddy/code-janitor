@@ -6,13 +6,15 @@ const TEST_BASENAME_PATTERNS: RegExp[] = [
     /\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs)$/i,
     /(Test|Tests|Spec|Specs)\.(java|kt|kts|cs|scala|swift)$/,
     /_spec\.rb$/i,
+    // GDScript has no single convention; `foo_test.gd` and `foo_tests.gd` are both common.
+    /_tests?\.gd$/i,
 ];
 
 const TEST_DIR_NAMES = new Set(['test', 'tests', '__tests__', 'spec', 'specs', 'testing']);
 
 const SOURCE_EXTENSIONS = new Set([
     '.go', '.py', '.rs', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
-    '.java', '.kt', '.kts', '.cs', '.scala', '.swift', '.rb', '.dart',
+    '.java', '.kt', '.kts', '.cs', '.scala', '.swift', '.rb', '.dart', '.gd',
 ]);
 
 /**

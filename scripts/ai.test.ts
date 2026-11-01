@@ -222,6 +222,9 @@ Unresolved reference: ScribblePuzzleViewModel in ScribblePuzzleViewModel.kt: (12
             assert.equal(isTestFilePath('src/test/java/com/acme/UserServiceTest.kt'), true);
             assert.equal(isTestFilePath('pkg/utils/test_helpers.py'), true);
             assert.equal(isTestFilePath('components/Button.spec.tsx'), true);
+            assert.equal(isTestFilePath('client/ui/draft_tests.gd'), true);
+            assert.equal(isTestFilePath('addons/inventory/slot_test.gd'), true);
+            assert.equal(isTestFilePath('client/ui/draft.gd'), false);
             assert.equal(isTestFilePath('scripts/ai.ts'), false);
             assert.equal(isTestFilePath('internal/store/store.go'), false);
             assert.equal(isTestFilePath(''), false);
@@ -230,6 +233,7 @@ Unresolved reference: ScribblePuzzleViewModel in ScribblePuzzleViewModel.kt: (12
         it('recognizes source files living inside conventional test directories', () => {
             assert.equal(isTestFilePath('tests/integration/login.rs'), true);
             assert.equal(isTestFilePath('src/__tests__/render.tsx'), true);
+            assert.equal(isTestFilePath('client/tests/fake_server.gd'), true);
             assert.equal(isTestFilePath('tests/fixtures/data.json'), false);
             assert.equal(isTestFilePath('src/latest/api.ts'), false);
         });
