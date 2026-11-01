@@ -346,6 +346,28 @@ runs:
       shell: bash
       run: command -v claude >/dev/null || npm install -g @anthropic-ai/claude-code
 
+    # The janitor opens its PRs and finds its earlier ones through `gh`. GitHub's hosted
+    # images carry it; a self-hosted runner may not, and without it every fix is pushed
+    # and then fails at "spawnSync gh ENOENT" with no PR, while deduplication quietly
+    # sees no earlier PRs at all.
+    - name: Install GitHub CLI
+      if: steps.plan.outputs.run == 'true' && runner.os == 'Linux'
+      shell: bash
+      env:
+        GH_VERSION: '2.83.0'
+      run: |
+        command -v gh >/dev/null && exit 0
+        case "$RUNNER_ARCH" in
+          X64) arch=amd64 ;;
+          ARM64) arch=arm64 ;;
+          *) echo "::warning::No GitHub CLI build for $RUNNER_ARCH; PRs cannot be opened."; exit 0 ;;
+        esac
+        dir="$RUNNER_TEMP/gh"
+        mkdir -p "$dir"
+        curl -sSfL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${arch}.tar.gz" \
+          | tar -xz -C "$dir" --strip-components=1
+        echo "$dir/bin" >> "$GITHUB_PATH"
+
     - name: Execute Code Janitor Agent
       if: steps.plan.outputs.run == 'true'
       shell: bash
