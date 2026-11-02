@@ -250,4 +250,16 @@ describe('agent', () => {
             fs.rmSync(dir, { recursive: true, force: true });
         }
     });
+
+    it('buildAgentSystemPrompt uses an explicit line budget', () => {
+        const prompt = agent.buildAgentSystemPrompt('verify.sh', { production: 7, test: 11 });
+        assert.ok(prompt.includes('at most 7 changed lines'));
+        assert.ok(prompt.includes('at most 11 across test files'));
+    });
+
+    it('buildAgentSystemPrompt defaults to the configured line budget', () => {
+        const prompt = agent.buildAgentSystemPrompt('verify.sh');
+        assert.ok(prompt.includes(`at most ${config.maxLineDiff} changed lines`));
+        assert.ok(prompt.includes(`at most ${config.maxTestLineDiff} across test files`));
+    });
 });
