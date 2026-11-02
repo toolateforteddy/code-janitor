@@ -264,7 +264,38 @@ export const fixesResponseSchema = z.object({
  * claude-code agent flow (see agent.ts), which names the files a fix will touch and
  * leaves writing the code to the agent; such a proposal has no `changes`.
  */
-export type FixProposal = z.infer<typeof fixProposalSchema> & { plannedFiles?: string[] };
+export type FixProposal = z.infer<typeof fixProposalSchema> & { plannedFiles?: string[]; chore?: ChoreRef };
+
+/** Where a repository keeps its chores: one TOML file per chore (see chores.ts). */
+export const CHORES_DIR = '.code-janitor/chores';
+
+/**
+ * The chore a proposal carries out, when it came from the repository's chore files
+ * rather than from reviewing the window. It brings its own line budgets, because the
+ * work a chore asks for (splitting a long file, say) is bigger than a nightly cleanup.
+ */
+export interface ChoreRef {
+    /** The chore's file name without `.toml`. */
+    name: string;
+    /** Repo-relative path of the chore's TOML file. */
+    source: string;
+    /** A one-off chore: the PR that does it also deletes `source`. */
+    once: boolean;
+    productionBudget: number;
+    testBudget: number;
+    /**
+     * Files the chore is about. They may lose declarations and most of their lines
+     * (moved into new files), so the checks against truncation are relaxed for them.
+     */
+    targets: string[];
+}
+
+/** The line budgets a proposal is held to: its chore's, or the configured ones. */
+export function fixLineBudget(fix: FixProposal): { production: number; test: number } {
+    return fix.chore
+        ? { production: fix.chore.productionBudget, test: fix.chore.testBudget }
+        : { production: maxLineDiff, test: maxTestLineDiff };
+}
 
 /** What the claude-code agent flow asks for: the fix described, not written. */
 export const fixPlanSchema = z.object({

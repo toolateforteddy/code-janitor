@@ -18,6 +18,7 @@
 - 🧪 **Convention-Aware Test Generation:** Before writing tests, Janitor feeds the existing sibling test files for each changed source file into the model's context (counterpart tests first, then same-directory tests, mirrored JVM `src/test` roots, and finally any test file in the repo). Generated tests reuse the project's real test framework, imports, and helpers instead of inventing ones that fail to compile.
 - 🎯 **Atomic PRs:** Splits refactors and fixes into tiny, single-responsibility PRs (<100 lines) so reviews take 30 seconds.
 - 🛡️ **Zero Broken PR Guarantee:** Runs your native linters and test commands (`go test`, `cargo test`, `npm test`, `pytest`, `./gradlew test`) locally inside the runner. If a change breaks compilation or a test, **it is automatically discarded before a PR is opened**.
+- 🧽 **Repository Chores:** A repo can give the janitor standing work, one TOML file per chore in `.code-janitor/chores/`: "split any `client/**/*.gd` over 750 lines", or a one-off "tidy `src/parser.ts`" whose PR deletes the chore. Which chores apply is decided by `git ls-files` and a line count, with no model call. See [Repository Chores](#-repository-chores).
 - 📚 **Architecture Docs Refresh (opt-in):** Set `architecture_docs` and the janitor keeps the short repo maps an agent reads before the code accurate. It reads what changed since each listed doc was last updated, fixes only what drifted (or writes a listed doc that does not exist yet), checks every path, name and command against the tree without running anything, and opens one small draft PR that names the commit behind each change. It edits nothing but the listed docs.
 - 📊 **Job Summary for Every Run:** Each run publishes a GitHub Actions job summary (`$GITHUB_STEP_SUMMARY`) — sweep type, branch health, proposal counts, and the outcome of every proposed fix with a link to the PR it opened — so you can see what a nightly sweep did without opening the logs.
 - 🔄 **Provider Fallback When Tokens Run Out:** Configure a backup provider and Janitor keeps going when the primary's token/credit allowance is spent — run Claude first, fail over to Gemini for the rest of the run. Exhausted-quota errors are told apart from ordinary rate limits, so a real 429 is still retried with backoff instead of burning the fallback.
@@ -480,6 +481,37 @@ List a path that is not there yet and the next run writes it, which is how a rep
 The refresh can change the listed docs and nothing else, whatever `exclude_paths` allows: the model has no write tools, and the janitor applies its edits to those paths alone. Other docs, which hold design decisions somebody made, are read as context at most. The code sweep in the same run is unaffected and keeps its own scope.
 
 ---
+
+## 🧽 Repository Chores
+
+A repository can ask the janitor for specific work instead of waiting for it to notice. Each chore is one TOML file in `.code-janitor/chores/`, so two branches that each add a chore add two different files and never conflict, and clearing a one-off chore is a file deletion, which never conflicts either.
+
+```toml
+# .code-janitor/chores/split-long-gdscript.toml
+title = "Split long GDScript files"
+instructions = """
+gdlint fails a file past 1000 lines. Split this one along its natural seams
+into new files beside it, and update every preload and reference.
+"""
+files = ["client/**/*.gd"]
+max_lines = 750
+max_line_diff = 800
+```
+
+| Key | Meaning |
+| :--- | :--- |
+| `instructions` | Required. What to do, in plain words; it becomes the fix's plan. |
+| `files` | Required. Git glob pathspecs (`**` crosses directories); a plain path names one file. |
+| `max_lines` | Applies to every matching file longer than this, on every sweep, one PR per file. |
+| `once` | A one-off: applies to every matching file, and the PR that does it deletes the chore file. |
+| `title` | PR title. Defaults to the file name. |
+| `max_line_diff`, `max_test_line_diff` | The chore's own line budgets, instead of the run's. Moving code counts as removed and added, so a split needs more than a nightly cleanup. |
+
+With neither `max_lines` nor `once`, a chore applies to the matching files that changed since the last sweep, in one PR. Unknown keys are an error, so a misspelt trigger is reported in the job summary rather than ignored.
+
+**When chores run.** On every code sweep with a green main, before the window is reviewed. They take their PRs from `max_prs_per_run` first; the review gets what is left. A chore is skipped while a janitor PR for it is open, or after one was closed without merging (delete or change the chore to retry). A `max_lines` or `once` chore ignores `target_path` and `exclude_paths`, since it names its own files; a chore with neither sees only the window the sweep sees.
+
+**What is relaxed.** The files a chore is about may lose top-level declarations and most of their lines, because moving code out of them is the point. Every other file in the PR gets the usual integrity checks, and lint and tests run as for any fix. On the `claude-code` agent flow a chore goes straight to the agent as its plan, with no planning request.
 
 ## 📏 Line Budget Enforcement
 

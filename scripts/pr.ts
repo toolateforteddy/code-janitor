@@ -20,12 +20,13 @@ import {
     JANITOR_TRAILER,
     JanitorPRKind,
     isPlannedFix,
+    fixLineBudget,
 } from './config.js';
 import { implementFixWithAgent } from './agent.js';
 import { applyEdits } from './edits.js';
 import { runVerification, logFailedDiff, cleanupWorktree } from './git.js';
 import { prepareWorktreeDependencies } from './deps.js';
-import { validateFixIntegrity } from './integrity.js';
+import { validateFixIntegrity, integrityOptionsFor } from './integrity.js';
 import { formatLineBudgetSummary } from './linebudget.js';
 import { attemptAutoFix, findFileInWorkspaceByBasename, sanitizeRelativePath } from './ai.js';
 import { recordFixResult } from './summary.js';
@@ -123,6 +124,13 @@ export function applyChangesToWorkspace(
     return { originalContents, editFailures };
 }
 
+/** The PR body's note on which chore a PR does, or '' for a proposal from the sweep. */
+export function describeChoreForPR(fix: FixProposal): string {
+    if (!fix.chore) return '';
+    const done = fix.chore.once ? ' It is a one-off chore, so this PR also deletes that file.' : '';
+    return `\n\nThis is the \`${fix.chore.name}\` chore from \`${fix.chore.source}\`.${done}`;
+}
+
 const PR_EMOJI: Record<JanitorPRKind, string> = { repair: '🚨', refactor: '🧹', 'architecture-docs': '📚' };
 const COMMIT_PREFIX: Record<JanitorPRKind, string> = { repair: 'fix', refactor: 'refactor', 'architecture-docs': 'docs' };
 
@@ -145,6 +153,14 @@ export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir:
                 if (cleanPath && fs.existsSync(path.resolve(workDir, cleanPath))) {
                     execFileSync('git', ['add', cleanPath], execOpts);
                 }
+            }
+        }
+
+        // A one-off chore is done once this PR merges, so the PR takes its file away.
+        if (fix.chore?.once) {
+            const source = sanitizeRelativePath(workDir, fix.chore.source);
+            if (source && fs.existsSync(path.resolve(workDir, source))) {
+                execFileSync('git', ['rm', '-q', '--', source], execOpts);
             }
         }
 
@@ -181,7 +197,7 @@ export function createAndSubmitPR(fix: FixProposal, branchName: string, workDir:
     const prArgs = [
         'pr', 'create',
         '--title', `${emoji} ${fix.title}`,
-        '--body', `${fix.description}\n\n_Generated automatically by Code Janitor [${modeType.toUpperCase()} mode]_\n\n${JANITOR_TRAILER}: ${modeType}`,
+        '--body', `${fix.description}${describeChoreForPR(fix)}\n\n_Generated automatically by Code Janitor [${modeType.toUpperCase()} mode]_\n\n${JANITOR_TRAILER}: ${modeType}`,
         '--head', branchName
     ];
     if (isDraft) prArgs.push('--draft');
@@ -224,7 +240,7 @@ async function finishAgentFix(fix: FixProposal, branchName: string, workDir: str
         recordFixResult({ slug: fix.slug, title: fix.title, modeType, outcome: 'verification-failed', detail: `Failed at ${outcome.failedStep}` });
         return false;
     }
-    console.log(`📏 Line budget for '${fix.slug}': ${formatLineBudgetSummary(outcome.originalContents, outcome.changes)}`);
+    console.log(`📏 Line budget for '${fix.slug}': ${formatLineBudgetSummary(outcome.originalContents, outcome.changes, fixLineBudget(fix).production, fixLineBudget(fix).test)}`);
     const described: FixProposal = outcome.summary
         ? { ...fix, description: `${fix.description}\n\n**What Claude Code changed:** ${outcome.summary}` }
         : fix;
@@ -265,9 +281,9 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
         // proposal changes.
         prepareWorktreeDependencies(mainWorkspace, worktreePath);
 
-        console.log(`📏 Line budget for '${fix.slug}': ${formatLineBudgetSummary(originalContents, changes)}`);
+        console.log(`📏 Line budget for '${fix.slug}': ${formatLineBudgetSummary(originalContents, changes, fixLineBudget(fix).production, fixLineBudget(fix).test)}`);
 
-        const integrity = validateFixIntegrity(originalContents, changes);
+        const integrity = validateFixIntegrity(originalContents, changes, undefined, integrityOptionsFor(fix));
         let verifResult: ReturnType<typeof runVerification>;
         let finalChanges = changes;
 
@@ -287,7 +303,7 @@ export async function processFixWorktree(fix: FixProposal, defaultBranch: string
             finalChanges = autoFixRes.updatedChanges;
 
             if (verifResult.success) {
-                const postFixIntegrity = validateFixIntegrity(originalContents, autoFixRes.updatedChanges);
+                const postFixIntegrity = validateFixIntegrity(originalContents, autoFixRes.updatedChanges, undefined, integrityOptionsFor(fix));
                 if (!postFixIntegrity.valid) {
                     console.warn(`⚠️ Integrity validation failed after auto-fix for '${fix.slug}': ${postFixIntegrity.reason}`);
                     verifResult = { success: false, failureOutput: postFixIntegrity.reason, failedStep: 'integrity' };
@@ -353,9 +369,9 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
         }
         console.log(`Working tree status (${fix.slug}):\n${statusPorcelain.split('\n').map(l => '  ' + l).join('\n')}`);
 
-        console.log(`📏 Line budget for '${fix.slug}': ${formatLineBudgetSummary(originalContents, changes)}`);
+        console.log(`📏 Line budget for '${fix.slug}': ${formatLineBudgetSummary(originalContents, changes, fixLineBudget(fix).production, fixLineBudget(fix).test)}`);
 
-        const integrity = validateFixIntegrity(originalContents, changes);
+        const integrity = validateFixIntegrity(originalContents, changes, undefined, integrityOptionsFor(fix));
         let verifResult: ReturnType<typeof runVerification>;
         let finalChanges = changes;
 
@@ -375,7 +391,7 @@ export async function processFixSequential(fix: FixProposal, defaultBranch: stri
             finalChanges = autoFixRes.updatedChanges;
 
             if (verifResult.success) {
-                const postFixIntegrity = validateFixIntegrity(originalContents, autoFixRes.updatedChanges);
+                const postFixIntegrity = validateFixIntegrity(originalContents, autoFixRes.updatedChanges, undefined, integrityOptionsFor(fix));
                 if (!postFixIntegrity.valid) {
                     console.warn(`⚠️ Integrity validation failed after auto-fix for '${fix.slug}': ${postFixIntegrity.reason}`);
                     verifResult = { success: false, failureOutput: postFixIntegrity.reason, failedStep: 'integrity' };

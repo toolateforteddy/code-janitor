@@ -15,6 +15,8 @@ import {
     architectureDocs,
     DOCS_ONLY_MODE,
     sweepEnabled,
+    maxPRs,
+    FixProposal,
 } from './config.js';
 import { runArchitectureDocs } from './archdocs.js';
 import {
@@ -34,6 +36,7 @@ import {
     modelFallback,
 } from './ai.js';
 import { processFixes } from './pr.js';
+import { loadChores, planChoreTasks, filterCoveredChoreTasks, proposeChore } from './chores.js';
 import { installMissingDependencies } from './deps.js';
 import {
     fetchExistingJanitorPRs,
@@ -213,7 +216,19 @@ async function runSweep() {
         return;
     }
 
+    // Chores first: the repository asked for them by name, so they come before anything
+    // the model finds on its own, and take their PRs out of the same per-run allowance.
+    let choreError: unknown = null;
+    let choresAttempted = 0;
+    try {
+        choresAttempted = await runChores(extractFilePathsFromDiff(recentDiff), existingPRs, defaultBranch, maxPRs);
+    } catch (err) {
+        choreError = err;
+    }
+    const refactorAllowance = Math.max(0, maxPRs - choresAttempted);
+
     if (!recentDiff.trim()) {
+        if (choreError) throw choreError;
         console.log("No recent diff content detected. Janitor task completed.");
         recordNote(janitorCommits
             ? `Only the janitor's own commits (${janitorCommits}) in the analysis window, or none outside them in scope; nothing to review.`
@@ -221,6 +236,13 @@ async function runSweep() {
         if (currentHead) {
             updateCursor(currentHead);
         }
+        return;
+    }
+
+    if (refactorAllowance === 0) {
+        recordNote(`Chores used all ${maxPRs} PR(s) this run allows; the window was not reviewed for other improvements.`);
+        if (currentHead) updateCursor(currentHead);
+        if (choreError) throw choreError;
         return;
     }
 
@@ -242,11 +264,11 @@ async function runSweep() {
         reviewDiff = filterDiffToFiles(recentDiff, picked);
     }
 
-    const proposedFixes = await generateFixProposals(reviewDiff, process.cwd(), existingPRContext);
+    const proposedFixes = (await generateFixProposals(reviewDiff, process.cwd(), existingPRContext)).slice(0, refactorAllowance);
     const fixes = dedupePRs ? filterDuplicateProposals(proposedFixes, existingPRs, 'refactor') : proposedFixes;
     const skippedFixes = proposedFixes.length - fixes.length;
-    summary.proposed = fixes.length;
-    summary.duplicatesSkipped = skippedFixes;
+    summary.proposed += fixes.length;
+    summary.duplicatesSkipped += skippedFixes;
     console.log(`Found ${fixes.length} proposed atomic improvements${skippedFixes > 0 ? ` (${skippedFixes} skipped as duplicates of existing janitor PRs)` : ''}.`);
     if (fixes.length > 0) {
         console.log("Planned PRs:");
@@ -260,6 +282,43 @@ async function runSweep() {
     if (currentHead) {
         updateCursor(currentHead);
     }
+    if (choreError) throw choreError;
+}
+
+/**
+ * Does the repository's chores (chores.ts) that apply this sweep, up to `allowance` of
+ * them, and returns how many it attempted. A chore an open or rejected janitor PR already
+ * covers is skipped. Chores run only on a green main, like the refactor sweep.
+ */
+async function runChores(changedFiles: string[], existingPRs: ExistingJanitorPR[], defaultBranch: string, allowance: number): Promise<number> {
+    const summary = getSummary();
+    const { chores, errors } = loadChores(process.cwd());
+    for (const error of errors) {
+        console.warn(`⚠️ ${error}`);
+        recordNote(`Chore skipped: ${error}`);
+    }
+    if (chores.length === 0) return 0;
+
+    const planned = planChoreTasks(chores, changedFiles, process.cwd());
+    const { tasks, covered } = filterCoveredChoreTasks(planned, existingPRs);
+    summary.duplicatesSkipped += covered.length;
+    console.log(`🧽 ${chores.length} chore(s) defined; ${planned.length} apply this sweep${covered.length ? `, ${covered.length} already covered by a janitor PR` : ''}.`);
+    if (tasks.length === 0) return 0;
+
+    const chosen = tasks.slice(0, allowance);
+    if (chosen.length < tasks.length) {
+        recordNote(`${tasks.length - chosen.length} chore task(s) left for a later run (max_prs_per_run is ${allowance}).`);
+    }
+    const fixes: FixProposal[] = [];
+    for (const task of chosen) {
+        console.log(`  🧽 ${task.slug}: ${task.reason}`);
+        const fix = await proposeChore(task, process.cwd());
+        if (fix) fixes.push(fix);
+        else recordNote(`Chore '${task.chore.name}' needed no change for ${task.files.join(', ')}.`);
+    }
+    summary.proposed += fixes.length;
+    await processFixes(fixes, defaultBranch, 'refactor');
+    return chosen.length;
 }
 
 export function isDirectExecution(): boolean {

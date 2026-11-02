@@ -14,11 +14,12 @@ import {
     enableTestGen,
     claudeCodeAgentMaxTurns,
     trustClaudeChecks,
+    fixLineBudget,
 } from './config.js';
 import { CLAUDE_CODE_PROVIDER, generateWithClaudeCode } from './claudecode.js';
 import { modelFallback } from './ai.js';
 import { runVerification } from './git.js';
-import { validateFixIntegrity } from './integrity.js';
+import { validateFixIntegrity, integrityOptionsFor, FixIntegrityOptions } from './integrity.js';
 import { recordClaudeCodeUsage } from './summary.js';
 import { isQuotaExhaustedError } from './retry.js';
 
@@ -178,14 +179,14 @@ export function writeVerifyScript(workDir: string, lint: string, test: string): 
     };
 }
 
-export function buildAgentSystemPrompt(verifyCommand: string): string {
+export function buildAgentSystemPrompt(verifyCommand: string, budget: { production: number; test: number } = { production: maxLineDiff, test: maxTestLineDiff }): string {
     return `
     You are an expert software engineer implementing one small, reviewed change in a fresh checkout of the repository (your working directory).
 
     RULES:
     1. Implement exactly the fix described, nothing more. Keep untouched code byte-identical.
     2. Touch only the files the plan names unless a caller or test genuinely has to change too; never more than 5 files.
-    3. LINE BUDGETS (ENFORCED AFTERWARDS, AND A FIX OVER BUDGET IS DISCARDED): at most ${maxLineDiff} changed lines (added + removed) across production files, and separately at most ${maxTestLineDiff} across test files.
+    3. LINE BUDGETS (ENFORCED AFTERWARDS, AND A FIX OVER BUDGET IS DISCARDED): at most ${budget.production} changed lines (added + removed) across production files, and separately at most ${budget.test} across test files.
     4. ${enableTestGen ? 'Add or extend tests where the plan calls for them, following the existing test files exactly: same framework, imports, helpers, naming and placement.' : 'Do NOT add or change tests; this repository has test generation turned off.'}
     5. Never delete a file, and never remove an existing top-level declaration unless the plan says to.
     6. Do not add suppressions (e.g. @Suppress, eslint-disable, # type: ignore) to get the checks green.
@@ -207,12 +208,12 @@ export function buildAgentPrompt(fix: FixProposal, previousFailure?: { step: str
  * Checks what the agent left on disk exactly as the edit flow checks a proposal:
  * integrity and line budgets first, then lint and tests run by the janitor itself.
  */
-export function checkAgentChanges(workDir: string, baseline: Set<string>, verify?: VerifyScript, trustPassedRun: boolean = trustClaudeChecks): AgentFixOutcome {
+export function checkAgentChanges(workDir: string, baseline: Set<string>, verify?: VerifyScript, trustPassedRun: boolean = trustClaudeChecks, integrityOptions: FixIntegrityOptions = {}): AgentFixOutcome {
     const { changes, originalContents } = collectAgentChanges(workDir, baseline);
     if (changes.length === 0) {
         return { success: false, changes, originalContents, summary: '', failedStep: 'no-changes', failureOutput: 'The agent left the working directory unchanged.' };
     }
-    const integrity = validateFixIntegrity(originalContents, changes);
+    const integrity = validateFixIntegrity(originalContents, changes, undefined, integrityOptions);
     if (!integrity.valid) {
         return { success: false, changes, originalContents, summary: '', failedStep: 'integrity', failureOutput: integrity.reason };
     }
@@ -247,7 +248,7 @@ export async function implementFixWithAgent(fix: FixProposal, workDir: string, o
 
     const baseline = new Set(listChangedPaths(workDir));
     const verify = writeVerifyScript(workDir, lintCmd, testCmd);
-    const system = buildAgentSystemPrompt(verify.command);
+    const system = buildAgentSystemPrompt(verify.command, fixLineBudget(fix));
     let outcome: AgentFixOutcome = { success: false, changes: [], originalContents: new Map(), summary: '', failedStep: 'agent', failureOutput: '' };
 
     try {
@@ -279,7 +280,7 @@ export async function implementFixWithAgent(fix: FixProposal, workDir: string, o
                 console.warn(`⚠️ Claude Code did not finish its report: ${err instanceof Error ? err.message : String(err)}`);
             }
 
-            outcome = { ...checkAgentChanges(workDir, baseline, verify), summary };
+            outcome = { ...checkAgentChanges(workDir, baseline, verify, trustClaudeChecks, integrityOptionsFor(fix)), summary };
             if (outcome.success || outcome.failedStep === 'no-changes') break;
             console.warn(`⚠️ Janitor check failed for '${fix.slug}' at ${outcome.failedStep}.`);
         }
