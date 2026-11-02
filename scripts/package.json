@@ -12,6 +12,7 @@
         "@ai-sdk/google": "^4.0.63",
         "@ai-sdk/openai": "^4.0.57",
         "ai": "^7.0.91",
+        "smol-toml": "^1.9.1",
         "zod": "^4.5.4"
     },
     "devDependencies": {

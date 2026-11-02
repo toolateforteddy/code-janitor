@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { FileChange, isEditBasedChange, enforceLineBudget } from './config.js';
+import { FileChange, FixProposal, isEditBasedChange, enforceLineBudget } from './config.js';
 import { validateLineBudget } from './linebudget.js';
 
 // Tried in order per line; the first pattern that matches wins. Go's grammar (method
@@ -92,10 +92,35 @@ export function validateSingleFileIntegrity(originalContent: string, updatedCont
     return { valid: true, reason: '' };
 }
 
+export interface FixIntegrityOptions {
+    /** Line budgets to enforce instead of the configured ones (a chore's own). */
+    budget?: { production: number; test: number };
+    /**
+     * Files a chore asked to restructure. Moving code out of them is the point, so the
+     * missing-declaration and mass-deletion checks, which exist to catch truncation, are
+     * skipped for these files only.
+     */
+    restructurePaths?: string[];
+}
+
+function normalizeRelPath(p: string): string {
+    return p.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+/** The integrity options a proposal is checked with: its chore's budgets and targets, if any. */
+export function integrityOptionsFor(fix: FixProposal): FixIntegrityOptions {
+    if (!fix.chore) return {};
+    return {
+        budget: { production: fix.chore.productionBudget, test: fix.chore.testBudget },
+        restructurePaths: fix.chore.targets,
+    };
+}
+
 export function validateFixIntegrity(
     originalContentOrMap: string | Map<string, string>,
     updatedContentOrChanges: string | FileChange[],
-    filePath?: string
+    filePath?: string,
+    fixOptions: FixIntegrityOptions = {}
 ): { valid: boolean; reason: string } {
     if (typeof originalContentOrMap === 'string' && typeof updatedContentOrChanges === 'string' && filePath) {
         return validateSingleFileIntegrity(originalContentOrMap, updatedContentOrChanges, filePath);
@@ -103,12 +128,14 @@ export function validateFixIntegrity(
 
     const changes = Array.isArray(updatedContentOrChanges) ? updatedContentOrChanges : [];
     const origMap = originalContentOrMap instanceof Map ? originalContentOrMap : new Map<string, string>();
+    const restructured = new Set((fixOptions.restructurePaths ?? []).map(normalizeRelPath));
 
     for (const change of changes) {
         const orig = origMap.get(change.filePath) || '';
         // updatedContent is resolved (edits applied) before validation runs; a change
         // that never resolved has nothing to validate.
         if (change.updatedContent === undefined) continue;
+        if (restructured.has(normalizeRelPath(change.filePath))) continue;
         const res = validateSingleFileIntegrity(orig, change.updatedContent, change.filePath, { editBased: isEditBasedChange(change) });
         if (!res.valid) {
             return res;
@@ -119,7 +146,9 @@ export function validateFixIntegrity(
     // for the auto-fix retry than "too big", and a proposal that fails both should
     // be told about the structural break first.
     if (enforceLineBudget) {
-        const budget = validateLineBudget(origMap, changes);
+        const budget = fixOptions.budget
+            ? validateLineBudget(origMap, changes, fixOptions.budget.production, fixOptions.budget.test)
+            : validateLineBudget(origMap, changes);
         if (!budget.valid) {
             return { valid: false, reason: budget.reason };
         }

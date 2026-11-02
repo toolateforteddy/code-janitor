@@ -35,6 +35,7 @@ import {
     claudeCodeAgent,
     plansResponseSchema,
     planToProposal,
+    fixLineBudget,
 } from './config.js';
 import { applyEdits } from './edits.js';
 import { runVerification, logFailedDiff, runCmd } from './git.js';
@@ -1084,7 +1085,7 @@ export async function attemptAutoFix(
     6. TRAILING NEWLINE MANDATE: when you supply 'updatedContent', it MUST ALWAYS end with a trailing newline character (\\n).
     7. RESPECT AGENT INSTRUCTIONS: Respect any project agent instructions or repository rules provided in AGENTS.md, .agents files, or related agent configurations.
     8. MATCH EXISTING TEST CONVENTIONS: When the failure is in a test file, mirror the existing test files provided in the context exactly: same test framework and runner, same import/package/module declarations, and the same helper and fixture utilities. Compilation failures in tests are usually caused by imports, helpers, or assertion APIs that do not exist in this project.
-    9. RESPECT LINE BUDGETS (ENFORCED IN CODE): The revised files must stay within ${maxLineDiff} total diff lines across non-test (production) files and ${maxTestLineDiff} total diff lines across test files, counted against the original contents. When the failure above is a line budget violation, shrink the change itself (narrow the refactor, keep untouched regions byte-identical) rather than reverting the file or deleting tests.
+    9. RESPECT LINE BUDGETS (ENFORCED IN CODE): The revised files must stay within ${fixLineBudget(fix).production} total diff lines across non-test (production) files and ${fixLineBudget(fix).test} total diff lines across test files, counted against the original contents. When the failure above is a line budget violation, shrink the change itself (narrow the refactor, keep untouched regions byte-identical) rather than reverting the file or deleting tests.
     10. WORKSPACE TOOLS: You have access to interactive workspace tools ('read_file', 'list_directory', 'run_command'). Use them if you need additional workspace context.
 `;
     try {
