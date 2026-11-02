@@ -138,6 +138,24 @@ describe('chores', () => {
             const tasks = planChoreTasks([chore()], ['client/main.gd', 'README.md'], repo);
             assert.deepEqual(tasks[0].files, ['client/main.gd']);
         });
+
+        it('a once chore caps its task at five files', () => {
+            const many = makeRepo(Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`client/f${i}.gd`, 'x\n'])));
+            const tasks = planChoreTasks([chore({ once: true })], [], many);
+            assert.equal(tasks.length, 1);
+            assert.equal(tasks[0].files.length, 5);
+        });
+
+        it('a max_lines chore skips files at the limit and gives each over-limit file its own slug', () => {
+            const r = makeRepo({ 'client/a.gd': lines(5), 'client/b.gd': lines(6), 'client/c.gd': lines(7) });
+            const tasks = planChoreTasks([chore({ max_lines: 5 })], [], r);
+            assert.deepEqual(tasks.map(t => t.files), [['client/b.gd'], ['client/c.gd']]);
+            assert.equal(new Set(tasks.map(t => t.slug)).size, 2);
+        });
+
+        it('a chore with no trigger and no changed files yields no tasks', () => {
+            assert.deepEqual(planChoreTasks([chore()], [], makeRepo({ 'client/a.gd': lines(3) })), []);
+        });
     });
 
     describe('filterCoveredChoreTasks()', () => {
@@ -148,6 +166,16 @@ describe('chores', () => {
             const existing: ExistingJanitorPR = { number: 1, title: 't', headRefName: branch, slug: extractSlugFromBranch(branch), files: [], state: 'open' };
             const result = filterCoveredChoreTasks(tasks, [existing]);
             assert.deepEqual(result.tasks.map(t => t.files[0]), ['client/b.gd']);
+            assert.equal(result.covered.length, 1);
+        });
+
+        it('matches slugs after normalizing case and punctuation', () => {
+            const repo = makeRepo({ 'client/a.gd': lines(5) });
+            const tasks = planChoreTasks([chore({ max_lines: 1 })], [], repo);
+            const messy = tasks[0].slug.toUpperCase().replace(/-/g, '_');
+            const existing: ExistingJanitorPR = { number: 2, title: 't', headRefName: `janitor/${messy}`, slug: messy, files: [], state: 'open' };
+            const result = filterCoveredChoreTasks(tasks, [existing]);
+            assert.equal(result.tasks.length, 0);
             assert.equal(result.covered.length, 1);
         });
     });
